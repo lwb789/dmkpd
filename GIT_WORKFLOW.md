@@ -429,6 +429,9 @@ git branch -vv                    # 应显示 origin/master 追踪关系
 > ⚠️ **务必用私有仓库** —— 项目含比赛数据相关信息。
 > 若用 Gitee，注意注册后需要在"设置 → 邮箱管理"里确认邮箱才能 push。
 
+**GitHub 的完整步骤见附录 A（第十节）。**
+
+
 #### 一次性配置（新机）
 
 ```powershell
@@ -845,7 +848,261 @@ git push -u origin main
 > `open-mmlab/mmpose` 这个独立 git 仓库里**,不用 patch 机制
 > 就**无法跨机同步** —— 换机会直接报 `No module named 'DMKPD_dataset'`。
 >
-> 方案:**代码走 git(1.3 MB)、数据和权重走网盘(7 GB)、
-> mmpose 改动走 patches(41 KB)**,三者分工明确。
+> 方案:**代码走 git(5.8 MiB)、数据和权重走网盘(1.42 GB)、
+> mmpose 改动走 patches(36 KB)**,三者分工明确。
 >
 > 全程只需一条纪律:**配置变更只在本机发起。**
+
+---
+
+## 十、附录 A：从登录 GitHub 到首次推送（完整步骤）
+
+> 本节是**手把手流程**。当前项目状态（2026-10-11 实测）：
+> ```
+> 身份        lwb789 / abc1021004366@163.com   （已配）
+> commits     6 个（2.60 MiB）
+> 分支        master
+> 远程仓库    未配置
+> 凭据助手    未配置
+> gh CLI      未安装
+> ```
+
+### 阶段 1：注册 / 登录 GitHub
+
+**若已有账号** → 跳到阶段 2。
+
+1. 打开 https://github.com/signup
+2. 填 **邮箱**（建议用学校邮箱或常用邮箱）→ **密码** → **用户名**
+3. 用户名会成为你的仓库地址一部分，比如
+   `https://github.com/lwb789/dmkpd`
+4. 验证邮箱（GitHub 会发一封确认邮件，**必须点确认链接**）
+5. 登录：https://github.com/login
+
+> ⚠️ **网络提示**：GitHub 在国内访问可能不稳定。
+> 如果打不开，两个备选：
+> - **Gitee（码云）**：https://gitee.com —— 国内最快，流程完全一样
+> - **学校 GitLab**：如果学校提供，优先用（网络最稳）
+>
+> 本文以 GitHub 为例，Gitee 只需把 `github.com` 换成 `gitee.com`。
+
+---
+
+### 阶段 2：创建私有仓库（网页操作）
+
+1. 登录后，点右上角 **`+`** → **New repository**
+   （或直接访问 https://github.com/new）
+
+2. 填写：
+
+| 字段 | 填什么 | 说明 |
+|---|---|---|
+| **Repository name** | `dmkpd` | 仓库名，建议不含中文 |
+| **Description** | `长安大学 AI 创新大赛 - DM 码四角检测` | 可选 |
+| **Public / Private** | ⚠️ **选 Private** | **必须私有**！项目含比赛数据 |
+| Initialize this repository with | **全部不勾** | 不勾 README / .gitignore / license |
+
+3. 点 **Create repository**
+
+4. 创建后会看到一个页面，里面有仓库地址。**复制这个地址**：
+
+```
+HTTPS 格式：https://github.com/lwb789/dmkpd.git
+                                    ^^^^^^ 换成你的用户名
+```
+
+> **为什么"全部不勾"**：我们**本地已有** 6 个 commit。
+> 如果网页端初始化了 README，两边历史不一致，首次 push 会报
+> `error: failed to push some refs ... Updates were rejected`。
+> 空仓库最省事。
+
+---
+
+### 阶段 3：配置凭据助手（避免每次输密码）
+
+GitHub 从 2021 年起**不再支持账号密码推送**，必须用
+**Personal Access Token（PAT）** 或 SSH。这里选 PAT + 凭据助手（最简单）。
+
+#### 3.1 装 Git Credential Manager（Windows 通常已自带）
+
+```powershell
+git config --global credential.helper manager
+```
+
+验证：
+```powershell
+git config --global credential.helper    # 应输出 manager
+```
+
+#### 3.2 生成 Personal Access Token
+
+1. 打开 https://github.com/settings/tokens
+2. 点 **Generate new token** → 选 **Generate new token (classic)**
+3. 填写：
+
+| 字段 | 填什么 |
+|---|---|
+| **Note** | `dmkpd-vscode`（备注，随便写） |
+| **Expiration** | `90 days`（或更长） |
+| **Select scopes** | ✅ 勾 **`repo`**（整个 repo 大项，会连带勾子项） |
+
+4. 点 **Generate token**
+5. ❗**立即复制**生成的 token（形如 `ghp_xxxxxxxxxxxx`）
+   —— **页面关闭后就再也看不到了**
+
+> **安全提醒**：token 相当于密码，**不要**发给任何人、
+> **不要**写进代码或文档、**不要**贴到聊天工具里。
+> 如果怀疑泄露，回到该页面 **Revoke** 掉重新生成。
+
+#### 3.3 首次 push 时输入
+
+第一次 `git push` 会弹窗（或命令行提示）：
+
+```
+Username: lwb789
+Password: <粘贴刚复制的 token，不是你的 GitHub 登录密码>
+```
+
+输一次后，Windows 凭据管理器会记住它，之后不再询问。
+
+---
+
+### 阶段 4：在项目里配置远程仓库
+
+```powershell
+cd D:\Personal\长安大学\人工智能创新大赛\DMKPD
+
+# ① 添加远程仓库（origin 是约定俗成的名字）
+git remote add origin https://github.com/lwb789/dmkpd.git
+
+# ② 验证
+git remote -v
+# 期望输出：
+#   origin  https://github.com/lwb789/dmkpd.git (fetch)
+#   origin  https://github.com/lwb789/dmkpd.git (push)
+
+# ③ 确认身份已配（当前项目已配置，无需重复）
+git config user.name
+git config user.email
+```
+
+> **常见错误**：`error: remote origin already exists`
+> → 说明已配过，改地址用：
+> ```powershell
+> git remote set-url origin https://github.com/lwb789/dmkpd.git
+> ```
+> 或先删再加：
+> ```powershell
+> git remote remove origin
+> git remote add origin <新地址>
+> ```
+
+---
+
+### 阶段 5：首次推送
+
+```powershell
+# -u 表示建立"追踪关系"：以后直接 git push / git pull 即可
+git push -u origin master
+```
+
+**期望输出**：
+```
+Enumerating objects: 60, done.
+...
+Writing objects: 100% (60/60), 1.94 MiB | 1.20 MiB/s, done.
+To https://github.com/lwb789/dmkpd.git
+ * [new branch]      master -> master
+branch 'master' set up to track 'origin/master'.
+```
+
+**验证**：
+```powershell
+git branch -vv
+# 期望：* master 2651f90 [origin/master] docs: ...
+
+# 或
+git log --oneline --decorate | Select-Object -First 3
+# 期望能看到 (HEAD -> master, origin/master)
+```
+
+刷新 GitHub 网页，应该能看到 **46 个文件**。
+
+---
+
+### 阶段 6：后续日常（只有两条命令）
+
+**本机（改完代码）：**
+```powershell
+git add -A
+git commit -m "说明改了什么"
+git push
+```
+
+**新机（拿最新代码）：**
+```powershell
+git pull
+```
+
+就这么简单。
+
+---
+
+### ❗阶段 7：推送失败的排查表
+
+| 报错 | 原因 | 修法 |
+|---|---|---|
+| `remote origin already exists` | 已配过 origin | `git remote set-url origin <地址>` |
+| `fatal: not a git repository` | 不在项目目录 | `cd` 到项目根目录 |
+| `Updates were rejected... non-fast-forward` | 远程仓库非空（网页端初始化了 README） | `git pull --rebase origin master` 再 push |
+| `Authentication failed` | 用了登录密码而不是 token | 重新 push，密码处粘贴 **PAT** |
+| `Support for password authentication was removed` | 同上的另一种提示 | 同上，必须用 PAT |
+| `Permission denied (publickey)` | 用了 SSH 地址但没配密钥 | 改用 HTTPS 地址：`git remote set-url origin https://...` |
+| `remote: Repository not found` | 地址写错 / 仓库是别人的 / 私有仓库无权限 | 核对用户名与仓库名；确认 token 勾了 `repo` |
+| `unable to access ... Could not resolve host` | 网络问题（GitHub 在国内不稳） | 换 Gitee，或用代理：`git config --global http.proxy http://127.0.0.1:端口` |
+| 推送很慢/卡住 | 同上 | 压缩后再推：`git config --global http.postBuffer 524288000` |
+| `CRLF will be replaced by LF` | Windows 行尾警告 | **无害**，忽略即可（不是错误） |
+
+---
+
+### 阶段 8：❗推送后必做的三项验证
+
+```powershell
+# ① 文件数对（应为 46）
+git ls-tree -r --name-only origin/master | Measure-Object -Line
+
+# ② 关键文件在（应为 1）
+git ls-tree -r --name-only origin/master | Select-String 'patches/'
+
+# ③ ❗大文件**不在**（应全为 0）
+foreach ($d in @('open-mmlab','.venv','work_dirs','modelbase_test',
+                 'submission','vis_out2','mmdet')) {
+    "{0,-16}: {1}" -f $d,
+        (git ls-tree -r --name-only origin/master | Select-String "^$d/").Count
+}
+```
+
+**再刷新 GitHub 网页核对**：
+- 文件列表里能看到 `patches/0001-dmkpd-dataset.patch` ✅
+- **看不到** `work_dirs/` / `.venv/` / `modelbase_test/` ✅
+- 页面右上角显示 **Private** 徽标 ✅
+
+---
+
+### 阶段 9：新机接入（用同一仓库）
+
+```powershell
+# 新机（RTX 4060）
+cd D:\
+git clone https://github.com/lwb789/dmkpd.git DMKPD
+cd DMKPD
+git config user.name  "lwb789"
+git config user.email "abc1021004366@163.com"
+
+# 之后更新代码只需
+git pull
+```
+
+> **此时你会得到一个"只有代码"的目录** ——
+> 数据/权重还要手动拷（见 `MIGRATE_TO_4060.md` 阶段 A/B）。
+> 拷完跑 `_env_check.py` 自检，全 OK 才能开始训练。
+
