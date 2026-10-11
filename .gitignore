@@ -105,16 +105,22 @@ submission/
 #
 # `*_out2.txt` 要单独写！`*_out.txt` **匹配不到** `_rt_out2.txt`
 # （实测踩过：`_rt_out2.txt` 被漏进来跟踪了）。
+#
+# 同理 `loss_curve.json` 匹配不到 `_loss_curve.json`（带下划线前缀），
+# `_dbg_*.txt` 匹配不到 `_dbg_*.py`。所以下面用更宽的通配。
 # ---------------------------------------------------------------- #
 *_out.txt
 *_out2.txt
 *_out3.txt
 *_stdout.txt
-_dbg_*.txt
-_tmp_*.txt
-_temp_*.txt
-geo_err.txt
+_dbg_*
+_rt_*
+_prof*
+_hooktest.py
+_smoke_train.py
+*_loss_curve.json
 loss_curve.json
+geo_err.txt
 
 # ---------------------------------------------------------------- #
 # Python
