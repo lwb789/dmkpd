@@ -49,25 +49,175 @@ open-mmlab/mmpose/  ← 是一个**独立的 git clone**
 
 ### 2.1 什么进 git,什么不进
 
-```
-✅ 进 git（约 1.3 MB）
-   · 所有 *.py 脚本（40 个）
-   · config.py / config_det.py
-   · DMKPD_dataset/splits/*.txt         ← 划分清单（几 KB，实验可复现的关键）
-   · det_dataset/annotations/*.json     ← 4 个 json（0.01 GB）
-   · patches/                            ← mmpose 的 5 文件改动（41 KB）★
-   · *.md 文档（PROJECT_STATUS / MIGRATE_TO_4060 / 本文件）
-   · requirements-lock.txt
-   · .gitignore
+#### ✅ git 会传上去什么（**实测 46 个文件 / 5.80 MiB**）
 
-❌ 不进 git（约 7 GB，手动/网盘同步）
-   · .venv/                5.58 GB   新机 rebuild
-   · DMKPD_dataset/        1.09 GB   除 splits 外
-   · work_dirs/            1.07 GB   训练产物
-   · modelbase_test/       0.30 GB   预训练权重
-   · open-mmlab/           0.03 GB   用 patches/ 代替 ★
-   · submission/           300 txt   每次导出都变
-   · vis_out2/             可视化    可重新生成
+```
+根目录脚本区（43 个文件 / 约 220 KB）
+  ── 核心（新机必需）──
+  config.py                 姿态配置
+  config_det.py             检测配置
+  run_train.py              姿态训练启动器
+  run_train_det.py          检测训练启动器
+  convert_det.py            LabelMe -> COCO 检测标注
+  make_split.py             train/val 图级划分
+  infer_e2e.py              端到端推理 + 导出提交
+  demo_pipeline.py          pipeline 演示
+  check_aug_geometry.py     增强参数几何校验
+  check_oob_log.py          出界日志分析
+  _env_check.py             ★ 环境自检（换机必用）
+  _check_patch.py           ★ patch 可还原性验证
+  _sub_check.py             ★ 提交格式自检
+  _e2e_zoom.py              预测质量可视化
+  _check_weight.py          权重加载校验（逐张量）★
+  _check_weight_det.py      同上（检测器）★
+
+  ── 一次性诊断（留着方便复查，也可删）──
+  _area_stats.py _bench_gpu.py _check_config.py _check_loss.py
+  _check_mmlab.py _check_model.py _check_split.py _det_bench.py
+  _det_bench2.py _det_smoke.py _det_stats.py _det_vis.py
+  _explain3.py _heat_zoom.py _step_detail.py _step_split.py
+  _step_vis.py _sub_issues.py
+
+数据与补丁（7 个文件 / 约 5.6 MB）
+  DMKPD_dataset/splits/train.txt                    332 KB  ← 划分清单
+  DMKPD_dataset/splits/val.txt                        5 KB  ← 划分清单
+  det_dataset/annotations/instances_train.json      4.7 MB
+  det_dataset/annotations/instances_val.json        264 KB
+  det_dataset/annotations/instances_test.json        30 KB
+  det_dataset/annotations/instances_holdout1702.json 145 KB
+  patches/0001-dmkpd-dataset.patch                 36 KB  ← ★ mmpose 改动
+
+文档与依赖（4 个文件 / 约 40 KB）
+  PROJECT_STATUS.md         项目状态与下一步
+  MIGRATE_TO_4060.md        迁移手册
+  GIT_WORKFLOW.md           本文件
+  requirements-lock.txt     依赖锁（92 行）
+  .gitignore
+```
+
+> **合计 46 个文件 / 5.80 MiB**（`size-pack` 2.60 MiB，因为 git 压缩了）
+
+#### ❌ 不进 git（约 7 GB,走网盘/移动硬盘）
+
+```
+.venv/                5.58 GB   新机 rebuild（pip install，10 分钟）
+DMKPD_dataset/        1.09 GB   除 splits/ 外全部（9591 jpg + 9591 json）
+work_dirs/            1.07 GB   训练产物
+modelbase_test/       0.30 GB   预训练权重（2 个 .pth）
+open-mmlab/           0.03 GB   用 patches/ 代替 ★
+submission/           300 txt   每次导出都变
+vis_out2/             0.02 GB   可视化，可重新生成
+mmdet/                —         junction，被 git 穿透会有危险
+```
+
+**总计：git 5.80 MiB vs 需手动传 7 GB** —— 比例约 1:1200。
+
+---
+
+### 2.1b ❗必须手动传的清单（`MIGRATE_TO_4060.md` 的搬运部分）
+
+git 只解决代码。以下**必须**用移动硬盘/网盘拷:
+
+| # | 内容 | 体积 | 说明 |
+|---|---|---|---|
+| 1 | `DMKPD_dataset/train/images/` | ~1.05 GB | 9591 张 jpg（**必需**） |
+| 2 | `DMKPD_dataset/train/annotations/` | ~0.04 GB | 9591 个 LabelMe json（**必需**） |
+| 3 | `DMKPD_dataset/test/` | 300 张 | 测试图（**必需**） |
+| 4 | `modelbase_test/` 的 2 个 `.pth` | 0.30 GB | hrnet-w48（257 MB）+ rtmdet-tiny（55 MB） |
+| 5 | `mmdet/` 或 `.venv/.../site-packages/mmdet` | — | 由 pip 重装（不用传） |
+| 6 | `open-mmlab/` | 0.03 GB | **网盘整拷**（最稳），或 clone + patch |
+| 7 | `work_dirs/*/best_*.pth` | 285 MB | 本机推理要用；**可选**（能从新机回传） |
+| 8 | `requirements-lock.txt` | 已在 git | 不用额外传 |
+
+⚠️ **`DMKPD_dataset/splits/` 不用传** —— 它在 git 里（保证划分一致）。
+
+**最小搬迁集**:1+2+3+4+6 = **约 1.42 GB**
+（迁完在新机可以立刻训练，`_env_check.py` 能验证一切就绪）
+
+---
+
+### 2.1c ❗`.gitignore` 的三层陷阱（全部实测踩过）
+
+这三条是本次实测**真实踩到**的,写下来避免重犯:
+
+#### 陷阱 1:忽略规则对**已跟踪文件无效**
+
+```
+现象：明明写了 `_dbg_*.txt`，但 `_hooktest.py`、`_rt_calc.py` 还在 git 里
+原因：`.gitignore` 只影响**未跟踪**文件。一旦文件被 `git add` 过，
+      再改 .gitignore 也不会让它消失
+修法：必须显式 `git rm --cached <file>`
+```
+
+#### 陷阱 2:通配符**不会跨后缀/前缀**
+
+实测漏掉的 4 个:
+
+| 写了 | 想匹配 | 实际匹配不到 | 原因 |
+|---|---|---|---|
+| `*_out.txt` | `_rt_out2.txt` | ❌ | `out` 后有 `2` |
+| `loss_curve.json` | `_loss_curve.json` | ❌ | 文件有 `_` 前缀 |
+| `_dbg_*.txt` | `_dbg_weight.py` | ❌ | 后缀是 `.py` |
+| `_prof*.py` 没写 | `_prof2.py` `_prof3.py` | ❌ | 完全没写 |
+
+**修法**：用更宽的通配，别指望一次写全:
+
+```gitignore
+*_out.txt
+*_out2.txt          ← 单独补
+*_stdout.txt
+_dbg_*              ← 不限后缀
+_rt_*               ← 不限后缀
+_prof*
+*_loss_curve.json
+loss_curve.json
+```
+
+> **最稳的做法**：改完 `.gitignore` 后**一定执行** `git status --short`
+> 核对一遍，别凭想象。
+
+#### 陷阱 3:junction 会被穿透（最危险）
+
+```
+现象：`git add -A` 后被跟踪文件从 54 暴涨到 1520
+原因：`mmdet` 是 Windows 目录联接，指向 `.venv/.../site-packages/mmdet`，
+      git 会**穿透**它，把里面 1466 个文件全部加进来
+更严重：git 删除 junction 时可能**连带删除目标目录的真实内容**
+      → 可能把 .venv 里的 mmdet 删掉
+修法：`.gitignore` 写 `mmdet/`
+      ⚠️ 不要写 `mmdet*`（会误伤 `mmdet_xxx.py`）
+```
+
+---
+
+### 2.1d 如何随时自查 git 会传什么
+
+```powershell
+# ① 精确清单
+git ls-files | Sort-Object
+
+# ② 文件数与体积
+(git ls-files).Count
+git count-objects -vH | Select-String 'size-pack'
+
+# ③ ❗分类健康检查：这些必须为 0
+foreach ($d in @('open-mmlab','.venv','work_dirs','modelbase_test',
+                 'submission','vis_out2','mmdet')) {
+    "{0,-16}: {1}" -f $d, (git ls-files "$d/").Count
+}
+
+# ④ 诊断残留自查（应为空）
+git ls-files | Where-Object { $_ -match '(_out\d*|_stdout|_dbg|_rt_|_prof)' }
+
+# ⑤ 看有哪些文件被忽略（排查"为什么这个文件没进 git"）
+git status --ignored --short | Where-Object { $_ -match '^!!' } | Select-Object -First 30
+```
+
+**实测健康值**（2026-10-11）：
+```
+文件数       46
+size-pack    2.60 MiB
+①-④ 的检查  全部通过
 ```
 
 ### 2.2 为什么 `splits/*.txt` 必须进 git
@@ -252,6 +402,161 @@ patches/0001-dmkpd-dataset.patch                     41 KB
 ---
 
 ## 四、日常流程
+
+### 4.0 ❗配置 git 之后，改动怎么传给新机（三种方式）
+
+这是你最关心的问题。先说**必须做的两个一次性配置**,再说日常操作。
+
+#### 一次性配置（本机）
+
+```powershell
+# ① 建私有远程仓库（Gitee / 学校 GitLab / GitHub 私有）
+#    在网页上新建空仓库，拿到地址后：
+git remote add origin https://gitee.com/<你的账号>/dmkpd.git
+
+# ② 设好身份（否则 commit 会报错或记错作者）
+git config user.name  "<你的名字>"
+git config user.email "<你的邮箱>"
+
+# ③ 首次推送
+git push -u origin master        # 注意分支名是 master（不是 main）
+
+# ④ 验证
+git remote -v
+git branch -vv                    # 应显示 origin/master 追踪关系
+```
+
+> ⚠️ **务必用私有仓库** —— 项目含比赛数据相关信息。
+> 若用 Gitee，注意注册后需要在"设置 → 邮箱管理"里确认邮箱才能 push。
+
+#### 一次性配置（新机）
+
+```powershell
+git clone https://gitee.com/<你的账号>/dmkpd.git D:\DMKPD
+cd D:\DMKPD
+git config user.name  "<你的名字>"
+git config user.email "<你的邮箱>"
+```
+
+之后新机就**不需要再 clone 了**,日常只 `git pull`。
+
+---
+
+#### 日常方式 A：**远程仓库**（推荐，最省心）
+
+这是配置好 git 之后的**标准流程**:
+
+**本机改代码 → 推送:**
+```powershell
+cd D:\Personal\长安大学\人工智能创新大赛\DMKPD
+
+git status                     # ① 看有哪些改动（养成习惯）
+git diff                       # ② 看具体改了什么（重要！）
+git add -A                     # ③ 暂存
+git commit -m "exp: padding 1.5 -> 1.75"   # ④ 提交
+git push                       # ⑤ 推送
+```
+
+**新机拉取:**
+```powershell
+cd D:\DMKPD
+git pull                       # 一条命令搞定
+git log --oneline -3           # 确认拉到了
+git diff HEAD~1 HEAD -- config.py   # 看这次改了什么
+```
+
+**耗时**:本机 push 约 2 秒,新机 pull 约 2 秒。
+**前提**:新机要能连外网(Gitee/GitHub)。
+
+**⚠️ 冲突预警**:如果新机上**直接改了文件**(违反纪律),`git pull` 会报冲突:
+```
+error: Your local changes to the following files would be overwritten by merge
+```
+**处理**:先看新机改了什么,若确认无用就丢弃:
+```powershell
+git checkout -- <file>     # 丢弃新机的改动
+git pull
+```
+**根本预防**:**新机只 pull,永远不直接改代码/配置**。
+
+---
+
+#### 日常方式 B：**U 盘 / 移动硬盘**（没网时）
+
+```powershell
+# 本机：打一个"增量包"（只含 git 跟踪的内容）
+cd D:\Personal\长安大学\人工智能创新大赛\DMKPD
+
+# 用 git archive 只导出被跟踪文件（自动排除 .venv/数据/权重）
+git archive -o "E:\code_$(Get-Date -f yyyyMMdd_HHmm).zip" HEAD
+# E: 是 U 盘盘符
+
+# 新机：解压覆盖（保留原有数据/权重不动）
+Expand-Archive "E:\code_20261011_1530.zip" -DestinationPath D:\DMKPD -Force
+```
+
+**`git archive` 的好处**:它**只打包 git 跟踪的文件**,
+天然不会把 7 GB 的数据/权重混进去 —— 包只有约 5.8 MiB。
+
+> ⚠️ **不要**直接 `git bundle` 或拷 `.git` 目录(容易出问题);
+> `git archive` 是最简单可靠的方式。
+
+**⚠️ 这种方式不会同步 git 历史** —— 新机不知道"改了什么"。
+适合临时救急,长期还是用方式 A。
+
+---
+
+#### 日常方式 C：**共享盘 / 局域网**（办公室场景）
+
+```powershell
+# 直接推到共享盘上的裸仓库（一次性建）
+git init --bare "\\server\share\dmkpd.git"
+
+# 本机
+git remote add local "\\server\share\dmkpd.git"
+git push local master
+
+# 新机
+git clone "\\server\share\dmkpd.git" D:\DMKPD
+# 之后日常 git pull local master
+```
+
+**优点**:不依赖外网,局域网内很快。
+**缺点**:要维护一个共享位置。
+
+---
+
+#### 三种方式对比
+
+| 方式 | 需要外网 | 同步 git 历史 | 速度 | 推荐度 |
+|---|---|---|---|---|
+| **A. 远程仓库** | ✅ 需要 | ✅ 完整 | 快（2 秒） | ⭐⭐⭐⭐⭐ |
+| **B. U 盘 + `git archive`** | ❌ 不需要 | ❌ 无 | 中（手动） | ⭐⭐⭐ |
+| **C. 共享盘裸仓库** | ❌ 局域网 | ✅ 完整 | 快 | ⭐⭐⭐⭐ |
+
+**建议**:主力用 **A**;偶尔没网时用 **B** 应急。
+**A 和 C 可以同时配**(`git remote add` 可加多个):
+```powershell
+git push origin master       # 推到外网
+git push local master        # 同时推到共享盘
+```
+
+---
+
+### 4.0b ❗最容易犯的四个错误
+
+| 错误 | 后果 | 正确做法 |
+|---|---|---|
+| **新机直接改 config** | 下次 pull 冲突；两边实验不可比 | 新机只 pull,**要改就告诉本机改** |
+| **`git add -A` 后不检查** | 把 GB 级文件/数据误提交 | 每次 `git add` 后**先 `git status`** |
+| **commit message 写成 "update"** | 回溯时完全看不出改了什么 | 写清**改了什么 + 为什么** |
+| **忘了 push** | 新机 pull 不到 | 改完立即 push;或用 `git status` 看 "ahead" |
+
+> **最有用的一条**:养成在 `git add -A` **之后、commit 之前**
+> 跑一次 `git status --short` 的习惯。它会把你将要提交的**全部**文件列出来,
+> 一眼就能发现"咦,这个 4 GB 的权重怎么在里面"。
+
+---
 
 ### 4.1 职责划分
 
