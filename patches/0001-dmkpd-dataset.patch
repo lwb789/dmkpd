@@ -70,19 +70,27 @@ index 00000000..8553c5f4
 --- /dev/null
 +++ b/mmpose/datasets/datasets/DM/registry.py
 @@ -0,0 +1,522 @@
-+"""DMKPD 鏁版嵁闆嗭紙Data Matrix 鐮佸叧閿偣妫€娴嬶級銆?+
-+鏍囨敞鏉ヨ嚜 LabelMe锛?*姣忎釜 json 瀵瑰簲涓€寮犲浘**锛岃€屼竴寮犲浘閲屽彲鑳藉瓨鍦ㄥ涓?DM 鐮侊紝
-+瀹炰緥涔嬮棿鐢?``group_id`` 鍖哄垎锛坙abel 缁熶竴閮芥槸 ``DPM``锛夈€?+
-+鍥犳鏈被涓嶄緷璧?``BaseDataset`` 榛樿鐨勩€屽崟 json + data_list銆嶅崗璁紝
-+鑰屾槸鑷繁閬嶅巻 ``ann_file`` 鎸囧悜鐨?*鐩綍**骞舵妸姣忎釜瀹炰緥灞曞紑涓轰竴鏉?data_info銆?+
-+**寮傚父瀹炰緥鐨勫墧闄?*锛氳嫢鏌愪釜 ``group_id`` 灞曞紑鍚庝笉鏄伆濂?4 涓鐐癸紙鐐规暟涓嶈冻
-+4锛屾垨鐐规暟澶氫簬 4 鈥斺€?鍚庤€呴€氬父鎰忓懗鐫€鏍囨敞鏃舵妸澶氫釜 DM 鐮侀敊鏍囨垚浜嗗悓涓€涓?+``group_id``锛夛紝鍒欒瀹炰緥琚涓轰笉鍙敤骞剁洿鎺ヨ烦杩囷紝鍚屾椂鍦ㄦ棩蹇楅噷姹囨€讳笂鎶ワ紝
-+閬垮厤寮傚父鏍锋湰琚潤榛樹涪寮冦€?+
-+config 涓娇鐢ㄧ殑瀛楁锛堝叏閮ㄦ槸 ``BaseDataset`` 鐨勬爣鍑嗗瓧娈碉級::
++"""DMKPD 数据集（Data Matrix 码关键点检测）。
++
++标注来自 LabelMe：**每个 json 对应一张图**，而一张图里可能存在多个 DM 码，
++实例之间用 ``group_id`` 区分（label 统一都是 ``DPM``）。
++
++因此本类不依赖 ``BaseDataset`` 默认的「单 json + data_list」协议，
++而是自己遍历 ``ann_file`` 指向的**目录**并把每个实例展开为一条 data_info。
++
++**异常实例的剔除**：若某个 ``group_id`` 展开后不是恰好 4 个角点（点数不足
++4，或点数多于 4 —— 后者通常意味着标注时把多个 DM 码错标成了同一个
++``group_id``），则该实例被视为不可用并直接跳过，同时在日志里汇总上报，
++避免异常样本被静默丢弃。
++
++config 中使用的字段（全部是 ``BaseDataset`` 的标准字段）::
 +
 +    dataset = dict(
 +        type='DMKPD_dataset',
-+        data_root='DMKPD_dataset',                 # 鏁版嵁鏍圭洰褰?+        ann_file='train/annotations',              # 鐩稿 data_root 鐨勬爣娉ㄧ洰褰?+        data_prefix=dict(img='train/images'),      # 鐩稿 data_root 鐨勫浘鐗囩洰褰?+        metainfo=dict(from_file='.../DMKPD_meta.py'))
++        data_root='DMKPD_dataset',                 # 数据根目录
++        ann_file='train/annotations',              # 相对 data_root 的标注目录
++        data_prefix=dict(img='train/images'),      # 相对 data_root 的图片目录
++        metainfo=dict(from_file='.../DMKPD_meta.py'))
 +"""
 +
 +import os.path as osp
@@ -100,8 +108,10 @@ index 00000000..8553c5f4
 +
 +@DATASETS.register_module(name='DMKPD_dataset')
 +class DMKPD_dataset(BaseDataset):
-+    """閬嶅巻鏍囨敞鐩綍锛屾妸 LabelMe 鏍囨敞灞曞紑鎴愬疄渚嬬骇 ``data_list``銆?+
-+    绾﹀畾锛氭瘡涓?``group_id`` 鏄竴涓疄渚嬶紝鍗曚釜瀹炰緥鐢?4 涓鐐圭粍鎴愩€?+    """
++    """遍历标注目录，把 LabelMe 标注展开成实例级 ``data_list``。
++
++    约定：每个 ``group_id`` 是一个实例，单个实例由 4 个角点组成。
++    """
 +
 +    METAINFO = {
 +        'dataset_name': 'DMKPD_dataset',
@@ -140,21 +150,28 @@ index 00000000..8553c5f4
 +        },
 +        'joint_weights': [1.0, 1.0, 1.0, 1.0],
 +        'sigmas': [0.1, 0.1, 0.1, 0.1],
-+        # CocoMetric 闇€瑕?`CLASSES` 鏉ユ瀯閫?COCO 鏍煎紡鐨?categories銆?+        # **蹇呴』鍐欐垚 COCO 鐨?loadCats 缁撴瀯**锛坙ist[dict] 涓斿惈 id/name锛夛紝
-+        # 鑻ュ啓鎴?`['DPM']` 杩欑瀛楃涓插垪琛紝xtcocotools 鐨?createIndex 浼氭姤
-+        # `TypeError: string indices must be integers`锛坈at['id']锛夈€?+        # 鍙﹀ parse_pose_metainfo 浼氫涪寮冮潪鏍囧噯閿紝鏁呯敱 _load_metainfo
-+        # 鍦ㄨВ鏋愪箣鍚庨噸鏂板鍥炲幓銆?+        'CLASSES': [dict(id=1, name='DPM', keypoints=[])],
++        # CocoMetric 需要 `CLASSES` 来构造 COCO 格式的 categories。
++        # **必须写成 COCO 的 loadCats 结构**（list[dict] 且含 id/name），
++        # 若写成 `['DPM']` 这种字符串列表，xtcocotools 的 createIndex 会报
++        # `TypeError: string indices must be integers`（cat['id']）。
++        # 另外 parse_pose_metainfo 会丢弃非标准键，故由 _load_metainfo
++        # 在解析之后重新塞回去。
++        'CLASSES': [dict(id=1, name='DPM', keypoints=[])],
 +    }
 +
 +    def __init__(self, *args, out_dir: Optional[str] = None, **kwargs):
-+        """鍦ㄨ皟鐢ㄧ埗绫?``__init__``锛堜細瑙﹀彂 ``load_data_list``锛変箣鍓嶆妸
-+        寮傚父瀹炰緥璁℃暟鍣ㄥ缓濂斤紝鍚﹀垯瑙ｆ瀽杩囩▼涓棤澶勭疮鍔犮€?+
++        """在调用父类 ``__init__``（会触发 ``load_data_list``）之前把
++        异常实例计数器建好，否则解析过程中无处累加。
++
 +        Args:
-+            out_dir (str, optional): 鑻ユ寚瀹氾紝鍒欐妸琚墧闄ゅ疄渚嬬殑鏄庣粏鍐欏埌
-+                ``{out_dir}/skipped_instances.txt``锛屼究浜庝簨鍚庢牳瀵规爣娉ㄨ川閲忋€?+        """
++            out_dir (str, optional): 若指定，则把被剔除实例的明细写到
++                ``{out_dir}/skipped_instances.txt``，便于事后核对标注质量。
++        """
 +        self._skipped_instances: List[Tuple[str, object, str]] = []
 +        self.out_dir = out_dir
-+        # 瀹炰緥锛堟爣娉級鍏ㄥ眬鑷缂栧彿銆傚繀椤诲湪 super().__init__ 涔嬪墠寤哄ソ锛?+        # 鍥犱负鐖剁被鏋勯€犱細瑙﹀彂 load_data_list -> parse_data_info 鐢ㄥ埌瀹?+        self._next_ann_id = 0
++        # 实例（标注）全局自增编号。必须在 super().__init__ 之前建好，
++        # 因为父类构造会触发 load_data_list -> parse_data_info 用到它
++        self._next_ann_id = 0
 +        super().__init__(*args, **kwargs)
 +
 +    # ------------------------------------------------------------------ #
@@ -162,12 +179,17 @@ index 00000000..8553c5f4
 +    # ------------------------------------------------------------------ #
 +    @classmethod
 +    def _load_metainfo(cls, metainfo: Optional[dict] = None) -> dict:
-+        """璁?mmpose 鐨?metainfo 瑙ｆ瀽鍣ㄧ敓鏁堛€?+
-+        ``mmengine.BaseDataset._load_metainfo`` 鍙妸 metainfo 褰撲綔鏅€?dict锛?+        鏃笉鏀寔 ``from_file``锛屼篃涓嶄細琛ュ叏 ``flip_indices`` /
-+        ``dataset_keypoint_weights`` 绛夋淳鐢熺礌鏉愩€傝繖閲屾敼鐢?mmpose 鐨?+        :func:`parse_pose_metainfo`锛岃繖鏍?config 閲岀殑
-+        ``metainfo=dict(from_file='.../DMKPD_meta.py')`` 鎵嶈兘琚纭鍙栥€?+        """
++        """让 mmpose 的 metainfo 解析器生效。
++
++        ``mmengine.BaseDataset._load_metainfo`` 只把 metainfo 当作普通 dict，
++        既不支持 ``from_file``，也不会补全 ``flip_indices`` /
++        ``dataset_keypoint_weights`` 等派生素材。这里改用 mmpose 的
++        :func:`parse_pose_metainfo`，这样 config 里的
++        ``metainfo=dict(from_file='.../DMKPD_meta.py')`` 才能被正确读取。
++        """
 +        raw = {**cls.METAINFO, **(metainfo or {})}
-+        # parse_pose_metainfo 鍙繚鐣欑櫧鍚嶅崟瀛楁锛屼細涓㈡帀 `CLASSES`锛?+        # 鑰?CocoMetric 闇€瑕佸畠 -> 瑙ｆ瀽鍚庤ˉ鍥炴潵
++        # parse_pose_metainfo 只保留白名单字段，会丢掉 `CLASSES`，
++        # 而 CocoMetric 需要它 -> 解析后补回来
 +        classes = raw.get('CLASSES')
 +        parsed = parse_pose_metainfo(raw)
 +        if classes is not None:
@@ -175,8 +197,9 @@ index 00000000..8553c5f4
 +        return parsed
 +
 +    def get_data_info(self, idx: int) -> dict:
-+        """鎶?pipeline / 妯″瀷闇€瑕佺殑 metainfo 娉ㄥ叆姣忔潯 data_info銆?+
-+        (``BaseCocoStyleDataset`` 涔熸槸杩欐牱鍋氱殑锛岃繖閲屼繚鎸佸悓鏍风殑瀛楁闆嗗悎銆?
++        """把 pipeline / 模型需要的 metainfo 注入每条 data_info。
++
++        (``BaseCocoStyleDataset`` 也是这样做的，这里保持同样的字段集合。)
 +        """
 +        data_info = super().get_data_info(idx)
 +        for key in ('dataset_name', 'upper_body_ids', 'lower_body_ids',
@@ -187,16 +210,21 @@ index 00000000..8553c5f4
 +        return data_info
 +
 +    # ------------------------------------------------------------------ #
-+    # 閬嶅巻鏈哄埗锛氱洰褰?-> json 鍒楄〃 -> 瀹炰緥绾?data_info
++    # 遍历机制：目录 -> json 列表 -> 实例级 data_info
 +    # ------------------------------------------------------------------ #
 +    def _list_ann_files(self) -> List[str]:
-+        """鎶?``self.ann_file`` 瑙ｆ瀽鎴?json 鏂囦欢鍒楄〃銆?+
-+        ``_join_prefix`` 宸茬粡鎶?``data_root`` 鎷艰繘鏉ヤ簡锛屾墍浠ヨ繖閲屾嬁鍒扮殑
-+        鍙兘鏄互涓嬩笁绉嶄箣涓€锛?+
-+        - 涓€涓?*鐩綍**锛堝舰濡?``DMKPD_dataset/train/annotations``锛夛細
-+          鍙栧叾涓墍鏈?``*.json``锛屾寜鏂囦欢鍚嶆帓搴忥紱
-+        - 涓€涓?``.txt`` **鍒掑垎娓呭崟**锛堢敤浜?train/val 鍒掑垎锛夛細
-+          姣忚涓€涓?json 璺緞锛宍`#`` 寮€澶寸殑琛屼笌绌鸿浼氳蹇界暐锛?+          **璺緞鍐欑浉瀵?``data_root``**锛岃繖鏍锋洿鎹㈡暟鎹牴鐩綍鏃舵竻鍗曟棤闇€鏀瑰姩锛?+        - 涓€涓?*鍗曚釜 json** 鏂囦欢銆?+        """
++        """把 ``self.ann_file`` 解析成 json 文件列表。
++
++        ``_join_prefix`` 已经把 ``data_root`` 拼进来了，所以这里拿到的
++        可能是以下三种之一：
++
++        - 一个**目录**（形如 ``DMKPD_dataset/train/annotations``）：
++          取其中所有 ``*.json``，按文件名排序；
++        - 一个 ``.txt`` **划分清单**（用于 train/val 划分）：
++          每行一个 json 路径，``#`` 开头的行与空行会被忽略；
++          **路径写相对 ``data_root``**，这样更换数据根目录时清单无需改动；
++        - 一个**单个 json** 文件。
++        """
 +        if not self.ann_file:
 +            return []
 +        if osp.isdir(self.ann_file):
@@ -208,9 +236,11 @@ index 00000000..8553c5f4
 +        return []
 +
 +    def _read_ann_list(self, list_file: str) -> List[str]:
-+        """璇诲彇 train/val 鍒掑垎娓呭崟銆?+
-+        娓呭崟姣忚鏄竴涓?json 鐨勮矾寰勶紙**鐩稿 ``data_root``**锛夛紝
-+        浠?``#`` 寮€澶寸殑琛屼笌绌鸿浼氳蹇界暐锛屼究浜庡湪鏂囦欢閲屽啓娉ㄩ噴銆?+        """
++        """读取 train/val 划分清单。
++
++        清单每行是一个 json 的路径（**相对 ``data_root``**），
++        以 ``#`` 开头的行与空行会被忽略，便于在文件里写注释。
++        """
 +        rels: List[str] = []
 +        with open(list_file, encoding='utf-8') as f:
 +            for line in f:
@@ -223,7 +253,7 @@ index 00000000..8553c5f4
 +        return [osp.join(self.data_root, r) for r in rels]
 +
 +    def _load_images_only(self) -> List[dict]:
-+        """娌℃湁鏍囨敞鏃讹紙渚嬪娴嬭瘯闆嗭級鐩存帴鏋氫妇鍥剧墖鐩綍銆?""
++        """没有标注时（例如测试集）直接枚举图片目录。"""
 +        img_root = self.data_prefix.get('img', '')
 +        img_files: List[str] = []
 +        for ext in ('*.jpg', '*.jpeg', '*.png', '*.bmp'):
@@ -236,7 +266,7 @@ index 00000000..8553c5f4
 +        ]
 +
 +    def load_data_list(self) -> List[dict]:
-+        """閬嶅巻鏍囨敞鐩綍涓嬫墍鏈?json锛屽苟灞曞紑涓哄疄渚嬬骇 ``data_list``銆?""
++        """遍历标注目录下所有 json，并展开为实例级 ``data_list``。"""
 +        ann_files = self._list_ann_files()
 +
 +        if not ann_files:
@@ -252,42 +282,47 @@ index 00000000..8553c5f4
 +        return data_list
 +
 +    def _report_skipped_instances(self, num_valid: int) -> None:
-+        """姹囨€讳笂鎶ユ湰娆″墧闄ゆ帀鐨勫紓甯稿疄渚嬨€?+
-+        寮傚父瀹炰緥锛堢偣鏁颁笉绛変簬 4锛変細琚潤榛樿烦杩囷紝鑻ヤ笉涓婃姤锛岃缁冩椂鏃犳硶瀵熻
-+        鏍囨敞璐ㄩ噺闂銆傝繖閲屾寜銆屽師鍥?-> 瀹炰緥鏁般€嶈仛鍚堝悗鎵撳嵃涓€鏉℃棩蹇楋紝骞舵妸
-+        鏄庣粏鍐欏埌 ``out_dir``锛堣嫢鎸囧畾锛夈€?+
++        """汇总上报本次剔除掉的异常实例。
++
++        异常实例（点数不等于 4）会被静默跳过，若不上报，训练时无法察觉
++        标注质量问题。这里按「原因 -> 实例数」聚合后打印一条日志，并把
++        明细写到 ``out_dir``（若指定）。
++
 +        Args:
-+            num_valid (int): 瀹為檯淇濈暀鐨勫疄渚嬫暟锛岀敤浜庣畻鍗犳瘮銆?+        """
++            num_valid (int): 实际保留的实例数，用于算占比。
++        """
 +        if not self._skipped_instances:
 +            print_log(
-+                f'[{type(self).__name__}] 鏍囨敞瑙ｆ瀽瀹屾垚锛氭湁鏁堝疄渚?{num_valid} 涓紝'
-+                f'鏈彂鐜板紓甯稿疄渚嬨€?,
++                f'[{type(self).__name__}] 标注解析完成：有效实例 {num_valid} 个，'
++                f'未发现异常实例。',
 +                logger='current')
 +            return
 +
-+        # 鎸夊師鍥犺仛鍚?+        reasons: dict = {}
++        # 按原因聚合
++        reasons: dict = {}
 +        for ann_file, gid, reason in self._skipped_instances:
 +            reasons[reason] = reasons.get(reason, 0) + 1
 +
 +        total = num_valid + len(self._skipped_instances)
-+        detail = '锛?.join(f'{k} {v} 涓? for k, v in sorted(reasons.items()))
++        detail = '；'.join(f'{k} {v} 个' for k, v in sorted(reasons.items()))
 +        print_log(
-+            f'[{type(self).__name__}] 鏍囨敞瑙ｆ瀽瀹屾垚锛氭湁鏁堝疄渚?{num_valid} 涓紝'
-+            f'鍓旈櫎寮傚父瀹炰緥 {len(self._skipped_instances)} 涓?
-+            f'锛堝崰 {100.0 * len(self._skipped_instances) / max(total, 1):.3f}%锛夈€?
-+            f'鍓旈櫎鍘熷洜锛歿detail}',
++            f'[{type(self).__name__}] 标注解析完成：有效实例 {num_valid} 个，'
++            f'剔除异常实例 {len(self._skipped_instances)} 个'
++            f'（占 {100.0 * len(self._skipped_instances) / max(total, 1):.3f}%）。'
++            f'剔除原因：{detail}',
 +            logger='current',
 +            level=30)  # logging.WARNING
 +
-+        # 鍓嶉潰 10 涓紓甯稿疄渚嬬殑鏄庣粏锛屼究浜庡畾浣嶆爣娉ㄩ棶棰?+        head = self._skipped_instances[:10]
++        # 前面 10 个异常实例的明细，便于定位标注问题
++        head = self._skipped_instances[:10]
 +        for ann_file, gid, reason in head:
 +            print_log(
-+                f'  琚墧闄? {osp.basename(ann_file)}  group_id={gid}  ({reason})',
++                f'  被剔除: {osp.basename(ann_file)}  group_id={gid}  ({reason})',
 +                logger='current',
 +                level=30)
 +        if len(self._skipped_instances) > len(head):
 +            print_log(
-+                f'  ... 鍏朵綑 {len(self._skipped_instances) - len(head)} 涓槑缁嗙暐',
++                f'  ... 其余 {len(self._skipped_instances) - len(head)} 个明细略',
 +                logger='current',
 +                level=30)
 +
@@ -297,22 +332,24 @@ index 00000000..8553c5f4
 +            os.makedirs(out_dir, exist_ok=True)
 +            log_path = osp.join(out_dir, 'skipped_instances.txt')
 +            with open(log_path, 'w', encoding='utf-8') as f:
-+                f.write('# 琚墧闄ょ殑寮傚父瀹炰緥锛堟爣娉ㄧ偣鏁颁笉绛変簬 4锛塡n')
++                f.write('# 被剔除的异常实例（标注点数不等于 4）\n')
 +                for reason, cnt in sorted(reasons.items()):
-+                    f.write(f'# {reason}: {cnt} 涓猏n')
++                    f.write(f'# {reason}: {cnt} 个\n')
 +                for ann_file, gid, reason in self._skipped_instances:
 +                    f.write(f'{ann_file}\tgroup_id={gid}\t{reason}\n')
 +            print_log(
-+                f'[{type(self).__name__}] 鍓旈櫎鏄庣粏宸插啓鍏?{log_path}',
++                f'[{type(self).__name__}] 剔除明细已写入 {log_path}',
 +                logger='current')
 +
 +    def parse_data_info(self, raw_data_info: dict) -> List[dict]:
-+        """鎶婁竴涓?LabelMe json 鎷嗘垚鑻ュ共鏉″疄渚嬬骇 data_info銆?+
-+        杩斿洖 ``list[dict]``锛堣€屼笉鏄崟涓?dict锛夛紝鍥犱负涓€寮犲浘鍙兘鏈夊涓疄渚嬨€?+        """
++        """把一个 LabelMe json 拆成若干条实例级 data_info。
++
++        返回 ``list[dict]``（而不是单个 dict），因为一张图可能有多个实例。
++        """
 +        ann_file = raw_data_info.get('ann_file', '')
 +        shapes = raw_data_info.get('shapes', []) or []
 +
-+        # 鍥剧墖鍚嶏細鐢?json 鍚屽悕 .jpg
++        # 图片名：用 json 同名 .jpg
 +        img_name = osp.splitext(osp.basename(ann_file))[0] + '.jpg'
 +        img_path = osp.join(self.data_prefix.get('img', ''), img_name)
 +
@@ -324,39 +361,65 @@ index 00000000..8553c5f4
 +        for group_id, group_shapes in self._group_shapes(shapes).items():
 +            keypoints, reason = self._extract_keypoints(group_shapes)
 +            if keypoints is None:
-+                # 璁板綍琚墧闄ょ殑瀹炰緥锛岀瓑鍏ㄩ儴瑙ｆ瀽瀹屽啀姹囨€讳笂鎶?+                self._skipped_instances.append((ann_file, group_id, reason))
++                # 记录被剔除的实例，等全部解析完再汇总上报
++                self._skipped_instances.append((ann_file, group_id, reason))
 +                continue
 +
 +            x1, y1 = keypoints[:, 0].min(), keypoints[:, 1].min()
 +            x2, y2 = keypoints[:, 0].max(), keypoints[:, 1].max()
 +
-+            # 鏍囨敞閲岀殑 flags.visibility 琛ㄧず璇ュ疄渚嬬殑銆岃倝鐪煎彲瑙佺▼搴︺€?+            # 锛?~1锛岃秺灏忚秺妯＄硦锛夛紝鏈暟鎹泦鏈夌害 37% 鐨勫疄渚嬩綆浜?0.3
-+            # 锛堟潵鑷?adv_final_* 杩欐壒瀵规姉鏍锋湰锛夈€?+            #
-+            # 杩欓噷**鏁呮剰涓嶇敤瀹冪粰 loss 闄嶆潈**锛屽師鍥犳湁浜岋細
++            # 标注里的 flags.visibility 表示该实例的「肉眼可见程度」
++            # （0~1，越小越模糊），本数据集有约 37% 的实例低于 0.3
++            # （来自 adv_final_* 这批对抗样本）。
 +            #
-+            # 1. 鐩爣瑕佹眰妯″瀷銆屽湪浣庡彲瑙佸害涓嬩篃鑳藉畾浣嶃€嶃€倂isibility 鎻忚堪鐨勬槸
-+            #    鍥惧儚闅惧害鑰岄潪鏍囩鍙潬搴︹€斺€斿洓鐐硅鍧愭爣鐢?DM 鐮佺殑鍒氭€х粨鏋?+            #    鍞竴纭畾锛屼笌娓呮櫚搴︽棤鍏筹紝瀹炴祴浣庡彲瑙佸疄渚嬬殑鍥炬鏄湡瀹炲瓨鍦ㄧ殑銆?+            #    闄嶆潈绛変簬涓诲姩鏀惧純杩欓儴鍒嗚缁冧俊鍙凤紝涓庨瞾妫掓€х洰鏍囩浉鍙嶏紱
-+            #    鑰岃瘎娴嬫槸鏃犳潈閲嶅湴缁熻鍏ㄩ儴鏍锋湰鐨勶紝璁粌/璇勬祴鍙ｅ緞浼氫笉涓€鑷淬€?+            # 2. mmpose 鐨?codec 瀵?keypoints_visible 鏈?*鍙岃涔?*锛?+            #    `codecs/utils/gaussian_heatmap.py` 涓?+            #    `if keypoints_visible[n, k] < 0.5: continue` 浼?*璺宠繃鐑姏鍥?+            #    鐢熸垚**锛堣閫氶亾鍏?0锛夛紝鑰?loss 鏉冮噸鍦ㄥ惊鐜鎻愬墠鎷疯礉銆?+            #    浜庢槸 visibility < 0.5 鐨勭偣浼氬彉鎴愩€宼arget 鍏?0 浣嗘潈閲嶉潪 0銆嶏紝
-+            #    鍗宠礋鐩戠潱锛氭儵缃氭ā鍨嬪湪璇ヤ綅缃骇鐢熷搷搴旓紝瀹屽叏杩濊儗鏈剰銆?+            #
-+            # 鍥犳 keypoints_visible 鎭掍负 1锛堝叏鍙銆佸叏鏉冮噸锛夛紝
-+            # 鑰屾妸 visibility 浣滀负鐙珛鍏冧俊鎭€忎紶缁欎笅娓革紝渚夸簬浜嬪悗鍋?+            # 銆屾竻鏅版牱鏈?/ 浣庡彲瑙佹牱鏈€嶇殑鍒嗗眰璇勪及銆?+            visibility = self._extract_visibility(group_shapes)
++            # 这里**故意不用它给 loss 降权**，原因有二：
++            #
++            # 1. 目标要求模型「在低可见度下也能定位」。visibility 描述的是
++            #    图像难度而非标签可靠度——四点角坐标由 DM 码的刚性结构
++            #    唯一确定，与清晰度无关，实测低可见实例的图案是真实存在的。
++            #    降权等于主动放弃这部分训练信号，与鲁棒性目标相反；
++            #    而评测是无权重地统计全部样本的，训练/评测口径会不一致。
++            # 2. mmpose 的 codec 对 keypoints_visible 有**双语义**：
++            #    `codecs/utils/gaussian_heatmap.py` 中
++            #    `if keypoints_visible[n, k] < 0.5: continue` 会**跳过热力图
++            #    生成**（该通道全 0），而 loss 权重在循环外提前拷贝。
++            #    于是 visibility < 0.5 的点会变成「target 全 0 但权重非 0」，
++            #    即负监督：惩罚模型在该位置产生响应，完全违背本意。
++            #
++            # 因此 keypoints_visible 恒为 1（全可见、全权重），
++            # 而把 visibility 作为独立元信息透传给下游，便于事后做
++            # 「清晰样本 / 低可见样本」的分层评估。
++            visibility = self._extract_visibility(group_shapes)
 +
 +            x1, y1 = keypoints[:, 0].min(), keypoints[:, 1].min()
 +            x2, y2 = keypoints[:, 0].max(), keypoints[:, 1].max()
 +            bbox = np.array([[x1, y1, x2, y2]], dtype=np.float32)
 +            keypoints_xy = keypoints.astype(np.float32)
 +
-+            # 璇ュ疄渚嬬殑鍏ㄥ眬鍞竴缂栧彿锛氱敤浜?CocoMetric 閲岄娴嬩笌 GT 鐨勯厤瀵广€?+            # 鐢ㄨ嚜澧炶鏁板櫒淇濊瘉鍞竴锛坕mg_id 鏄瓧绗︿覆锛屼笉鑳界洿鎺ュ綋 ann id锛?+            ann_id = self._next_ann_id
++            # 该实例的全局唯一编号：用于 CocoMetric 里预测与 GT 的配对。
++            # 用自增计数器保证唯一（img_id 是字符串，不能直接当 ann id）
++            ann_id = self._next_ann_id
 +            self._next_ann_id += 1
-+            # 鈿狅笍 image_id 蹇呴』涓?data_sample['img_id'] **瀹屽叏涓€鑷?*锛?+            # CocoMetric 鐨?gt_to_coco_json 鐢?`gt_dict['img_id']` 寤?+            # `images[].id`锛岃€屾爣娉ㄧ敤 `ann['image_id']`銆備袱鑰呬笉涓€鑷存椂
-+            # COCOeval 鎵句笉鍒板尮閰嶏紝鎵€鏈夋寚鏍囦細鍙樻垚 -1.00锛堟垜韪╄繃杩欎釜鍧戯級銆?+            # 杩欓噷缁熶竴鐢ㄥ彲璇荤殑瀛楃涓?img_id锛坸tcocotools 鐢?dict 绱㈠紩锛?+            # 瀛楃涓插畬鍏ㄥ悎娉曪級銆?+            image_id = osp.splitext(img_name)[0]
++            # ⚠️ image_id 必须与 data_sample['img_id'] **完全一致**：
++            # CocoMetric 的 gt_to_coco_json 用 `gt_dict['img_id']` 建
++            # `images[].id`，而标注用 `ann['image_id']`。两者不一致时
++            # COCOeval 找不到匹配，所有指标会变成 -1.00（我踩过这个坑）。
++            # 这里统一用可读的字符串 img_id（xtcocotools 用 dict 索引，
++            # 字符串完全合法）。
++            image_id = osp.splitext(img_name)[0]
 +
-+            # 闈㈢Н = bbox 闈㈢Н銆傚畠鏄?OKS 鐨勫垎姣嶏紙OKS 閲岀殑 `area`锛夛紝
-+            # 涔熸槸 AP(M)/AP(L) 鍒嗘缁熻鐨勪緷鎹€?+            # **涓嶈涔?COCO 閭ｄ釜浜轰綋鐨?0.53 淇绯绘暟**鈥斺€旈偅鏄浜轰綋
-+            # bbox 杩滃ぇ浜庣湡瀹炶疆寤撶殑琛ュ伩锛孌M 鐮佺殑 bbox 鏄揣璐寸爜鐨?+            # 锛堝疄娴?w/h 涓綅 1.013锛夛紝涔樹簡浼氫綆浼伴潰绉€?+            area = float((x2 - x1) * (y2 - y1))
++            # 面积 = bbox 面积。它是 OKS 的分母（OKS 里的 `area`），
++            # 也是 AP(M)/AP(L) 分段统计的依据。
++            # **不要乘 COCO 那个人体的 0.53 修正系数**——那是对人体
++            # bbox 远大于真实轮廓的补偿，DM 码的 bbox 是紧贴码的
++            # （实测 w/h 中位 1.013），乘了会低估面积。
++            area = float((x2 - x1) * (y2 - y1))
 +
-+            # CocoMetric 鍦ㄦ湭鎻愪緵 ann_file 鏃讹紝浼氱幇鍦虹敤 raw_ann_info 鎷?+            # COCO 鏍煎紡 json锛岄渶瑕佺殑閿 gt_to_coco_json()锛?+            # id / image_id / category_id / bbox / keypoints / iscrowd / area
-+            # keypoints 蹇呴』鏄睍骞崇殑 [x1,y1,v1, x2,y2,v2, ...]锛坴=2 琛ㄧず鍙锛?+            flat_kpts = []
++            # CocoMetric 在未提供 ann_file 时，会现场用 raw_ann_info 拼
++            # COCO 格式 json，需要的键见 gt_to_coco_json()：
++            # id / image_id / category_id / bbox / keypoints / iscrowd / area
++            # keypoints 必须是展平的 [x1,y1,v1, x2,y2,v2, ...]（v=2 表示可见）
++            flat_kpts = []
 +            for (px, py) in keypoints_xy:
 +                flat_kpts.extend([float(px), float(py), 2.0])
 +            raw_ann_info = dict(
@@ -364,7 +427,7 @@ index 00000000..8553c5f4
 +                image_id=image_id,
 +                category_id=1,
 +                bbox=[float(x1), float(y1), float(x2 - x1),
-+                      float(y2 - y1)],  # COCO 鏄?xywh
++                      float(y2 - y1)],  # COCO 是 xywh
 +                keypoints=flat_kpts,
 +                iscrowd=0,
 +                area=area,
@@ -374,7 +437,8 @@ index 00000000..8553c5f4
 +            data_info = dict(
 +                img_path=img_path,
 +                img_id=osp.splitext(img_name)[0],
-+                # 浠ヤ笅涓変釜渚?CocoMetric 浣跨敤锛堣 CocoMetric.process锛?+                id=ann_id,
++                # 以下三个供 CocoMetric 使用（见 CocoMetric.process）
++                id=ann_id,
 +                image_id=image_id,
 +                category_id=1,
 +                iscrowd=0,
@@ -383,9 +447,11 @@ index 00000000..8553c5f4
 +                width=width,
 +                height=height,
 +                bbox=bbox,
-+                # top-down 鎺ㄧ悊鏃讹紝add_pred_to_datasample 浼氭妸
-+                # gt_instances.bbox_scores 澶嶅埗缁?pred_instances
-+                # 锛堣 pose_estimators/topdown.py锛夛紝缂轰簡瀹冧細 AttributeError銆?+                # 娉ㄦ剰閿悕鐢ㄥ崟鏁?`bbox_score`锛孭ackPoseInputs 鐨?+                # instance_mapping_table 浼氭妸瀹冩槧灏勬垚澶氭暟鐨?`bbox_scores`
++                # top-down 推理时，add_pred_to_datasample 会把
++                # gt_instances.bbox_scores 复制给 pred_instances
++                # （见 pose_estimators/topdown.py），缺了它会 AttributeError。
++                # 注意键名用单数 `bbox_score`，PackPoseInputs 的
++                # instance_mapping_table 会把它映射成多数的 `bbox_scores`
 +                bbox_score=np.ones(1, dtype=np.float32),
 +                keypoints=keypoints_xy[None],  # (1, K, 2)
 +                keypoints_visible=np.ones((1, len(keypoints_xy)),
@@ -400,11 +466,11 @@ index 00000000..8553c5f4
 +        return instances
 +
 +    # ------------------------------------------------------------------ #
-+    # 瑙ｆ瀽杈呭姪鍑芥暟
++    # 解析辅助函数
 +    # ------------------------------------------------------------------ #
 +    @staticmethod
 +    def _group_shapes(shapes: list) -> dict:
-+        """鎸?``group_id`` 鎶?shapes 鍒嗙粍锛屼竴缁?= 涓€涓?DM 鐮佸疄渚嬨€?""
++        """按 ``group_id`` 把 shapes 分组，一组 = 一个 DM 码实例。"""
 +        grouped: dict = {}
 +        for idx, shape in enumerate(shapes):
 +            gid = shape.get('group_id')
@@ -415,20 +481,30 @@ index 00000000..8553c5f4
 +
 +    @staticmethod
 +    def _extract_visibility(group_shapes: list) -> float:
-+        """璇诲彇鏍囨敞閲岀殑 ``flags.visibility``锛屼綔涓鸿瀹炰緥鐨勩€屽彲瑙佺▼搴︺€嶃€?+
-+        璇ュ瓧娈垫弿杩扮殑鏄?*鍥惧儚闅惧害**锛圖M 鐮佸湪鐢婚潰涓殑娓呮櫚/妯＄硦绋嬪害锛夛紝
-+        鑰屼笉鏄爣绛惧彲闈犲害锛屽洜姝?*涓嶇敤浜?loss 鍔犳潈**锛堢悊鐢辫
-+        :meth:`parse_data_info`锛夈€傝繖閲屽彧鎶婂畠鎻愬彇鍑烘潵浣滀负鍏冧俊鎭紝
-+        渚涗簨鍚庡仛銆屾竻鏅版牱鏈?/ 浣庡彲瑙佹牱鏈€嶇殑鍒嗗眰璇勪及銆?+
-+        鏁版嵁闆嗗疄娴嬶細绾?37% 鐨勫疄渚?``visibility < 0.3``锛堟潵鑷?+        ``adv_final_*`` 杩欐壒瀵规姉鏍锋湰锛夛紝鏈€灏?0.1073锛涘叾浣欑害 0.80~1.00銆?+
-+        鍙栧€艰鍒欙細
++        """读取标注里的 ``flags.visibility``，作为该实例的「可见程度」。
 +
-+        - 鍚屼竴 group 鍐呭彇鎵€鏈?shape 鐨?``visibility``锛?*鎸夌偣鏁板姞鏉冨钩鍧?*
-+          锛堟甯告儏鍐典竴涓?shape 涓€涓€硷紝鍙栧钩鍧囧嵆閫€鍖栨垚璇ュ€硷級锛?+        - 娌℃湁浠讳綍 ``visibility`` 瀛楁鏃讹紙鏃╂湡 linestrip 鏍囨敞銆佹祴璇曢泦锛?+          杩斿洖 ``1.0``锛屽嵆瑙嗕负瀹屽叏鍙锛?+        - 缁撴灉瑁佸壀鍒?``[0, 1]``锛岄伩鍏嶆爣娉ㄥ紓甯稿€艰秴鍑鸿寖鍥淬€?+
++        该字段描述的是**图像难度**（DM 码在画面中的清晰/模糊程度），
++        而不是标签可靠度，因此**不用于 loss 加权**（理由见
++        :meth:`parse_data_info`）。这里只把它提取出来作为元信息，
++        供事后做「清晰样本 / 低可见样本」的分层评估。
++
++        数据集实测：约 37% 的实例 ``visibility < 0.3``（来自
++        ``adv_final_*`` 这批对抗样本），最小 0.1073；其余约 0.80~1.00。
++
++        取值规则：
++
++        - 同一 group 内取所有 shape 的 ``visibility``，**按点数加权平均**
++          （正常情况一个 shape 一个值，取平均即退化成该值）；
++        - 没有任何 ``visibility`` 字段时（早期 linestrip 标注、测试集）
++          返回 ``1.0``，即视为完全可见；
++        - 结果裁剪到 ``[0, 1]``，避免标注异常值超出范围。
++
 +        Args:
-+            group_shapes (list): 鍚屼竴 ``group_id`` 涓嬬殑 shape 鍒楄〃銆?+
++            group_shapes (list): 同一 ``group_id`` 下的 shape 列表。
++
 +        Returns:
-+            float: 璇ュ疄渚嬬殑鍙绋嬪害锛屽彇鍊?``[0, 1]``銆?+        """
++            float: 该实例的可见程度，取值 ``[0, 1]``。
++        """
 +        vals = []
 +        weights = []
 +        for shape in group_shapes:
@@ -449,59 +525,71 @@ index 00000000..8553c5f4
 +            return 1.0
 +
 +        v = float(np.average(vals, weights=weights))
-+        # 闃叉鏍囨敞寮傚父瀵艰嚧瓒呭嚭 [0, 1]
++        # 防止标注异常导致超出 [0, 1]
 +        return float(min(1.0, max(0.0, v)))
 +
 +    @staticmethod
 +    def _extract_keypoints(
 +            group_shapes: list) -> Tuple[Optional[np.ndarray], str]:
-+        """鎶婁竴缁?shape 鐨勮鐐规暣鐞嗘垚 ``(4, 2)``锛岄『搴忎负椤烘椂閽?TL, TR, BR, BL銆?+
-+        鍏抽敭鐐癸細LabelMe 閲屽洓鐐瑰彧淇濊瘉銆屾部椤烘椂閽堜緷娆＄浉杩炪€嶏紝**璧风偣涓嶅浐瀹?*
-+        锛堝彲鑳芥槸 TL/TR/BR/BL 涓换鎰忎竴涓級锛屽洜姝や笉鑳界洿鎺ョ収鎶勪功鍐欓『搴忥紝鑰岃
-+        鑷繁杩樺師寰幆椤哄簭銆?+
-+        杩樺師鏂瑰紡鏄€岀粫璐ㄥ績鎸夋瀬瑙掓帓搴忋€嶁€斺€斿鍑稿杈瑰舰鐨?4 涓《鐐癸紝鏋佽鎺掑簭
-+        寰楀埌鐨勬鏄《鐐圭殑寰幆椤哄簭銆傝繖涓€鐐规瘮鏃╂湡鐢ㄧ殑 ``x+y`` / ``x-y``
-+        鏋佸€兼硶绋冲仴寰楀锛氭瀬鍊兼硶鍦ㄦ柟鍧楁帴杩?45掳 鎽嗘斁鏃朵細閫€鍖栵紙鍚屼竴涓偣鍚屾椂
-+        鎴愪负涓や釜鏂瑰悜鐨勬渶鍊硷級锛屽疄娴嬪叏閲忔暟鎹腑鏈?6.16% 鐨勫疄渚嬩細琚帓閿欍€?+
-+        寰楀埌寰幆椤哄簭鍚庡啀鍋氫袱浠惰鑼冨寲鐨勪簨锛?+
-+        1. **缁熶竴鐜粫鏂瑰悜涓洪『鏃堕拡**锛堝浘鍍忓潗鏍?y 鍚戜笅鏃讹紝鏈夊悜闈㈢Н > 0锛夛紱
-+        2. **缁熶竴璧风偣**锛氬彇 ``x + y`` 鏈€灏忕殑鐐逛綔涓?``top_left``銆?+
-+        杩欐牱杈撳嚭鎵嶆槸纭畾鐨勶紝妯″瀷鎵嶈兘瀛﹀埌绋冲畾鐨勫叧閿偣璇箟銆?+
-+        鏈柟娉?*鍙帴鍙楁伆濂?4 涓鐐?*鐨勫疄渚嬨€傝嫢鐐规暟涓嶈冻 4锛堜緥濡傝鎷嗘垚
-+        澶氭鏈ˉ榻愶級锛屾垨鐐规暟澶氫簬 4锛堥€氬父鏄爣娉ㄦ椂鎶婂涓?DM 鐮侀敊鏍囨垚浜嗗悓涓€
-+        涓?``group_id``锛夛紝鍒欒涓轰笉鍙敤锛岃繑鍥?``(None, 鍘熷洜)`` 鐢辫皟鐢ㄦ柟
-+        涓㈠純骞朵笂鎶ャ€傛敞鎰忥細杩欓噷鍒绘剰涓嶅仛銆屽彇鍑稿寘/鍙栧墠 4 涓偣銆嶄箣绫荤殑鐚滄祴鎬?+        淇ˉ锛屼互鍏嶆妸閿欒鏍囨敞鎮勬倓鍙樻垚閿欒鐩戠潱淇″彿銆?+
++        """把一组 shape 的角点整理成 ``(4, 2)``，顺序为顺时针 TL, TR, BR, BL。
++
++        关键点：LabelMe 里四点只保证「沿顺时针依次相连」，**起点不固定**
++        （可能是 TL/TR/BR/BL 中任意一个），因此不能直接照抄书写顺序，而要
++        自己还原循环顺序。
++
++        还原方式是「绕质心按极角排序」——对凸多边形的 4 个顶点，极角排序
++        得到的正是顶点的循环顺序。这一点比早期用的 ``x+y`` / ``x-y``
++        极值法稳健得多：极值法在方块接近 45° 摆放时会退化（同一个点同时
++        成为两个方向的最值），实测全量数据中有 6.16% 的实例会被排错。
++
++        得到循环顺序后再做两件规范化的事：
++
++        1. **统一环绕方向为顺时针**（图像坐标 y 向下时，有向面积 > 0）；
++        2. **统一起点**：取 ``x + y`` 最小的点作为 ``top_left``。
++
++        这样输出才是确定的，模型才能学到稳定的关键点语义。
++
++        本方法**只接受恰好 4 个角点**的实例。若点数不足 4（例如被拆成
++        多段未补齐），或点数多于 4（通常是标注时把多个 DM 码错标成了同一
++        个 ``group_id``），则视为不可用，返回 ``(None, 原因)`` 由调用方
++        丢弃并上报。注意：这里刻意不做「取凸包/取前 4 个点」之类的猜测性
++        修补，以免把错误标注悄悄变成错误监督信号。
++
 +        Returns:
-+            tuple: ``(keypoints, reason)``銆傛垚鍔熸椂 ``keypoints`` 涓?+            ``(4, 2)`` 鐨?``np.ndarray``銆乣`reason`` 涓?``''``锛涘け璐ユ椂
-+            ``keypoints`` 涓?``None``銆乣`reason`` 涓哄墧闄ゅ師鍥犳枃鏈€?+        """
++            tuple: ``(keypoints, reason)``。成功时 ``keypoints`` 为
++            ``(4, 2)`` 的 ``np.ndarray``、``reason`` 为 ``''``；失败时
++            ``keypoints`` 为 ``None``、``reason`` 为剔除原因文本。
++        """
 +        points = [
 +            pt for shape in group_shapes for pt in (shape.get('points') or [])
 +        ]
 +        pts = np.asarray(points, dtype=np.float32)
 +        if pts.ndim != 2 or pts.shape[0] < 4:
-+            return None, f'鐐规暟涓嶈冻4(鐐规暟={0 if pts.ndim != 2 else pts.shape[0]})'
++            return None, f'点数不足4(点数={0 if pts.ndim != 2 else pts.shape[0]})'
 +
-+        # 鍘绘帀棣栧熬閲嶅悎鐨勯棴鍚堢偣锛坧olygon 甯歌鍐欐硶锛?+        if np.allclose(pts[0], pts[-1]):
++        # 去掉首尾重合的闭合点（polygon 常见写法）
++        if np.allclose(pts[0], pts[-1]):
 +            pts = pts[:-1]
 +
 +        if pts.shape[0] > 4:
-+            return None, f'鐐规暟澶氫簬4(鍘婚棴鍚堢偣鍚庣偣鏁?{pts.shape[0]})'
++            return None, f'点数多于4(去闭合点后点数={pts.shape[0]})'
 +        if pts.shape[0] < 4:
-+            return None, f'鐐规暟涓嶈冻4(鍘婚棴鍚堢偣鍚庣偣鏁?{pts.shape[0]})'
++            return None, f'点数不足4(去闭合点后点数={pts.shape[0]})'
 +
-+        # 鈶?缁曡川蹇冩寜鏋佽鎺掑簭 -> 杩樺師鍥涜竟褰㈤《鐐圭殑寰幆椤哄簭
++        # ① 绕质心按极角排序 -> 还原四边形顶点的循环顺序
 +        center = pts.mean(axis=0)
 +        angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
 +        pts = pts[np.argsort(angles, kind='stable')]
 +
-+        # 鈶?缁熶竴鐜粫鏂瑰悜锛氫护鏈夊悜闈㈢Н涓烘锛堝浘鍍忓潗鏍囦笅鍗充负椤烘椂閽堬級
++        # ② 统一环绕方向：令有向面积为正（图像坐标下即为顺时针）
 +        x, y = pts[:, 0], pts[:, 1]
 +        area = 0.5 * float(
 +            np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 +        if area < 0:
 +            pts = pts[::-1]
 +
-+        # 鈶?缁熶竴璧风偣锛歺+y 鏈€灏忚€呰涓哄乏涓婅锛堝苟鍒楁椂鍐嶆瘮 x锛?+        s = pts[:, 0] + pts[:, 1]
++        # ③ 统一起点：x+y 最小者视为左上角（并列时再比 x）
++        s = pts[:, 0] + pts[:, 1]
 +        start = int(np.lexsort((pts[:, 0], s))[0])
 +        return np.roll(pts, -start, axis=0).astype(np.float32), ''
 \ No newline at end of file
@@ -512,8 +600,11 @@ index 00000000..f41cde19
 +++ b/mmpose/datasets/datasets/DM/transforms.py
 @@ -0,0 +1,209 @@
 +# Copyright (c) OpenMMLab. All rights reserved.
-+"""鏈暟鎹泦涓撶敤鐨勬暟鎹彉鎹€?+
-+鏀惧湪 ``DM`` 鍖呭唴锛岄殢 ``mmpose.datasets.datasets`` 涓€璧疯 import锛?+鍥犳鍦?config 閲岀洿鎺ュ啓 ``type='...'`` 鍗冲彲锛屾棤闇€棰濆 import銆?+"""
++"""本数据集专用的数据变换。
++
++放在 ``DM`` 包内，随 ``mmpose.datasets.datasets`` 一起被 import，
++因此在 config 里直接写 ``type='...'`` 即可，无需额外 import。
++"""
 +import os
 +import os.path as osp
 +from typing import Optional
@@ -529,40 +620,58 @@ index 00000000..f41cde19
 +
 +@TRANSFORMS.register_module()
 +class CheckKeypointOutOfBounds(BaseTransform):
-+    """妫€鏌?``TopdownAffine`` 涔嬪悗鏄惁鏈夎鐐硅瑁佸嚭鐢婚潰锛屽苟璁板綍鏃ュ織銆?+
-+    涓轰粈涔堥渶瑕佸畠
++    """检查 ``TopdownAffine`` 之后是否有角点被裁出画面，并记录日志。
++
++    为什么需要它
 +    ------------
-+    ``TopdownAffine`` 鎶?bbox 鍖哄煙瑁佸垏骞剁缉鏀惧埌 ``input_size``锛岀獥鍙ｅぇ灏忕敱
-+    ``padding * bbox_scale`` 鍐冲畾锛堣 ``get_warp_matrix``锛屽綋
-+    ``fix_aspect_ratio=True`` 鏃剁獥鍙ｆ槸杈归暱 ``padding*w`` 鐨勬鏂瑰舰锛夈€?+    濡傛灉 ``RandomBBoxTransform`` 鐨勭缉鏀?鏃嬭浆骞呭害杩囧ぇ锛岃鐐逛細钀藉埌绐楀彛涔嬪銆?+
-+    绐楀彛鑳藉绾崇洰鏍囩殑鏁板绾︽潫涓猴紙``w``銆乣`h`` 涓?bbox 瀹介珮锛宍`胃`` 涓烘棆杞锛夛細:
++    ``TopdownAffine`` 把 bbox 区域裁切并缩放到 ``input_size``，窗口大小由
++    ``padding * bbox_scale`` 决定（见 ``get_warp_matrix``，当
++    ``fix_aspect_ratio=True`` 时窗口是边长 ``padding*w`` 的正方形）。
++    如果 ``RandomBBoxTransform`` 的缩放/旋转幅度过大，角点会落到窗口之外。
 +
-+        (w路|cos胃| + h路|sin胃|) / max(w, h)  <=  padding 路 s
++    窗口能容纳目标的数学约束为（``w``、``h`` 为 bbox 宽高，``θ`` 为旋转角）：:
 +
-+    鏈€鍧忔儏鍐碉紙姝ｆ柟褰€佄?45掳锛夊彸渚ч渶 ``sqrt(2) = 1.4142``銆?+    涔熷氨鏄 ``padding * scale_factor[0] >= 1.4142`` 蹇呴』鎴愮珛銆?+
-+    鍑虹晫鐨勫悗鏋?+    ----------
-+    mmpose 鐨?``generate_gaussian_heatmaps`` 鏈変袱绉嶅垎鏀細
++        (w·|cosθ| + h·|sinθ|) / max(w, h)  <=  padding · s
 +
-+    * 楂樻柉 3蟽 绐楀彛**瀹屽叏**鍦ㄧ敾闈㈠ -> ``keypoint_weights = 0``锛堟棤瀹筹級
-+    * 楂樻柉绐楀彛**閮ㄥ垎**鍦ㄧ敾闈㈠ -> 鏉冮噸浠嶄负 1锛屽嵈鍙敾鍑轰竴涓瑁佹帀鐨勯珮鏂?+      锛堣交搴︽爣绛惧櫔澹帮細鎯╃綒妯″瀷鍦ㄥ畠鐪嬩笉鍒扮殑浣嶇疆浜х敓鍝嶅簲锛?+
-+    鏈彉鎹㈡妸"鍑虹晫瑙掔偣"鐨?``keypoints_visible`` 鏄惧紡缃?0锛屼娇 codec 璧?+    "瀹屽叏璺宠繃 + 鏉冮噸 0"鐨勫畨鍏ㄥ垎鏀紝**涓嶄細浜х敓璐熺洃鐫?*锛涘悓鏃舵妸鍑虹晫鏄庣粏鍐欏叆
-+    鏃ュ織鏂囦欢锛屼究浜庝簨鍚庢牳鏌ュ寮哄弬鏁版槸鍚﹁繃婵€銆?+
-+    涓轰粈涔?*涓嶅垹闄ゅ疄渚?*
++    最坏情况（正方形、θ=45°）右侧需 ``sqrt(2) = 1.4142``。
++    也就是说 ``padding * scale_factor[0] >= 1.4142`` 必须成立。
++
++    出界的后果
++    ----------
++    mmpose 的 ``generate_gaussian_heatmaps`` 有两种分支：
++
++    * 高斯 3σ 窗口**完全**在画面外 -> ``keypoint_weights = 0``（无害）
++    * 高斯窗口**部分**在画面外 -> 权重仍为 1，却只画出一个被裁掉的高斯
++      （轻度标签噪声：惩罚模型在它看不到的位置产生响应）
++
++    本变换把"出界角点"的 ``keypoints_visible`` 显式置 0，使 codec 走
++    "完全跳过 + 权重 0"的安全分支，**不会产生负监督**；同时把出界明细写入
++    日志文件，便于事后核查增强参数是否过激。
++
++    为什么**不删除实例**
 +    --------------------
-+    涓€涓疄渚嬫湁 4 涓鐐癸紝鍑虹晫 1 涓椂鍏朵綑 3 涓粛鏄湁鏁堢洃鐫ｄ俊鍙凤紱
-+    鍒犻櫎鏁翠釜瀹炰緥锛堟垨杩斿洖 ``None`` 瑙﹀彂 refetch锛変細娴垂鏁版嵁锛屽苟璁?epoch
-+    鑰楁椂鍙樺緱涓嶅彲棰勬祴銆傚疄娴嬪湪鎺ㄨ崘鍙傛暟涓嬪嚭鐣岀巼绾?0.07%锛屽奖鍝嶅彲蹇界暐銆?+
++    一个实例有 4 个角点，出界 1 个时其余 3 个仍是有效监督信号；
++    删除整个实例（或返回 ``None`` 触发 refetch）会浪费数据，并让 epoch
++    耗时变得不可预测。实测在推荐参数下出界率约 0.07%，影响可忽略。
++
 +    Required Keys:
 +        - transformed_keypoints
 +        - input_size
 +        - keypoints_visible
 +
 +    Modified Keys:
-+        - keypoints_visible (鍑虹晫瑙掔偣缃?0)
++        - keypoints_visible (出界角点置 0)
 +
 +    Args:
-+        elapse (float): 杈圭紭瀹夊叏甯﹀锛堝儚绱狅級銆傝窛鐢婚潰杈圭晫灏忎簬璇ュ€肩殑瑙掔偣
-+            铏芥湭鍑虹晫锛屼絾浼氳璁颁负"杩戠晫"浠ヤ究瑙傚療銆傞粯璁?1.0銆?+        mask_near (bool): 鏄惁涔熸妸"杩戠晫"瑙掔偣鐨?``keypoints_visible`` 缃?0銆?+            榛樿 ``False``锛堣繎鐣岃鐐逛粛鍦ㄧ敾闈㈠唴锛岀洃鐫ｆ槸鍚堢悊鐨勶紝鍙褰曚笉灞忚斀锛夈€?+        out_dir (str, optional): 鑻ユ寚瀹氾紝鍑虹晫鏄庣粏浼氳拷鍔犲啓鍏?+            ``{out_dir}/oob_keypoints_log.txt``锛屼究浜庝簨鍚庢煡璇併€傞粯璁?``None``銆?+        log_interval (int): 姣忕疮璁″灏戜釜寮傚父瀹炰緥鎵撳嵃涓€鏉?WARNING銆傞粯璁?50銆?+        enabled (bool): 鍏虫帀妫€鏌ョ殑鎬诲紑鍏炽€傞粯璁?``True``銆?+    """
++        elapse (float): 边缘安全带宽（像素）。距画面边界小于该值的角点
++            虽未出界，但会被记为"近界"以便观察。默认 1.0。
++        mask_near (bool): 是否也把"近界"角点的 ``keypoints_visible`` 置 0。
++            默认 ``False``（近界角点仍在画面内，监督是合理的，只记录不屏蔽）。
++        out_dir (str, optional): 若指定，出界明细会追加写入
++            ``{out_dir}/oob_keypoints_log.txt``，便于事后查证。默认 ``None``。
++        log_interval (int): 每累计多少个异常实例打印一条 WARNING。默认 50。
++        enabled (bool): 关掉检查的总开关。默认 ``True``。
++    """
 +
 +    def __init__(self,
 +                 elapse: float = 1.0,
@@ -577,8 +686,12 @@ index 00000000..f41cde19
 +        self.log_interval = log_interval
 +        self.enabled = enabled
 +
-+        # 杩愯鏈熺粺璁★紙姣忎釜杩涚▼鍚勬寔涓€浠斤紝鍥?transform 瀵硅薄闅?dataset 涓€璧?+        # 琚?dataloader 鐨?worker 鎷疯礉锛?+        self._num_seen = 0        # 缁忚繃鏈彉鎹㈢殑瀹炰緥鏁?+        self._num_oob = 0         # 鍚嚭鐣岃鐐圭殑瀹炰緥鏁?+        self._num_oob_kpts = 0    # 鍑虹晫瑙掔偣鎬绘暟
-+        self._num_near_kpts = 0   # 杩戠晫瑙掔偣鎬绘暟
++        # 运行期统计（每个进程各持一份，因 transform 对象随 dataset 一起
++        # 被 dataloader 的 worker 拷贝）
++        self._num_seen = 0        # 经过本变换的实例数
++        self._num_oob = 0         # 含出界角点的实例数
++        self._num_oob_kpts = 0    # 出界角点总数
++        self._num_near_kpts = 0   # 近界角点总数
 +
 +    # ------------------------------------------------------------------ #
 +    def transform(self, results: dict) -> Optional[dict]:
@@ -586,7 +699,8 @@ index 00000000..f41cde19
 +            return results
 +
 +        kpts = results.get('transformed_keypoints')
-+        # TopdownAffine 鍦ㄦ棤鏍囩鏃朵細濉叆 np.zeros([])锛岄渶瑕佹帓闄?+        if kpts is None or kpts.size == 0:
++        # TopdownAffine 在无标签时会填入 np.zeros([])，需要排除
++        if kpts is None or kpts.size == 0:
 +            return results
 +
 +        input_size = results.get('input_size')
@@ -611,7 +725,7 @@ index 00000000..f41cde19
 +            self._num_oob_kpts += num_oob
 +        self._num_near_kpts += num_near
 +
-+        # ---- 缁勮鍙緵浜嬪悗鏌ヨ瘉鐨勫彉鎹俊鎭?----
++        # ---- 组装可供事后查证的变换信息 ----
 +        def _round(arr):
 +            return np.round(np.asarray(arr, dtype=np.float32),
 +                            3).tolist() if arr is not None else None
@@ -630,26 +744,26 @@ index 00000000..f41cde19
 +            bbox_rotation=_round(results.get('bbox_rotation')),
 +        )
 +
-+        # ---- 1) 鏄庣粏杩藉姞鍒版枃浠讹紝鐣欎綔浜嬪悗鏌ヨ瘉 ----
++        # ---- 1) 明细追加到文件，留作事后查证 ----
 +        if self.out_dir:
 +            self._append_record(record)
 +
-+        # ---- 2) 鍛ㄦ湡鎬ф眹鎬诲埌鏃ュ織锛岄伩鍏嶅埛灞?----
++        # ---- 2) 周期性汇总到日志，避免刷屏 ----
 +        total_abn = self._num_oob + self._num_near_kpts
 +        if total_abn % self.log_interval == 0 or num_oob > 0:
 +            print_log(
-+                f'[CheckKeypointOutOfBounds] 绱妫€鏌?{self._num_seen} 瀹炰緥锛?
-+                f'鍏朵腑 {self._num_oob} 涓疄渚嬪惈鍑虹晫瑙掔偣'
-+                f'锛堝叡 {self._num_oob_kpts} 涓鐐硅灞忚斀锛夛紝'
-+                f'杩戠晫瑙掔偣 {self._num_near_kpts} 涓€?
-+                f'褰撳墠鏍锋湰: img_id={record["img_id"]}, '
-+                f'鍑虹晫瑙掔偣绱㈠紩={record["oob_kpt_indices"]}, '
++                f'[CheckKeypointOutOfBounds] 累计检查 {self._num_seen} 实例，'
++                f'其中 {self._num_oob} 个实例含出界角点'
++                f'（共 {self._num_oob_kpts} 个角点被屏蔽），'
++                f'近界角点 {self._num_near_kpts} 个。'
++                f'当前样本: img_id={record["img_id"]}, '
++                f'出界角点索引={record["oob_kpt_indices"]}, '
 +                f'bbox_scale={record["bbox_scale"]}, '
 +                f'bbox_rotation={record["bbox_rotation"]}',
 +                logger='current',
 +                level=30)  # WARNING
 +
-+        # ---- 3) 灞忚斀鍑虹晫瑙掔偣锛岃 codec 璧?璺宠繃 + 鏉冮噸 0"鐨勫畨鍏ㄥ垎鏀?----
++        # ---- 3) 屏蔽出界角点，让 codec 走"跳过 + 权重 0"的安全分支 ----
 +        mask = oob.copy()
 +        if self.mask_near:
 +            mask |= near
@@ -667,9 +781,12 @@ index 00000000..f41cde19
 +
 +    # ------------------------------------------------------------------ #
 +    def _append_record(self, record: dict) -> None:
-+        """鎶婁竴鏉℃槑缁嗚拷鍔犲啓鍏?``{out_dir}/oob_keypoints_log.txt``銆?+
-+        澶囨敞锛氳缁冩椂鏈彉鎹細鍦ㄥ涓?dataloader worker 涓悇鎸佷竴浠斤紝
-+        鍥犳鍦ㄥ悓涓€鏂囦欢涓婂彲鑳芥湁骞跺彂杩藉姞銆傝繖閲屼繚璇?涓€鏉¤褰曚竴娆?+        ``write``"锛屽嵆渚胯椤哄簭浜ら敊涔熶笉浼氫涪鏁版嵁鎴栦覆琛屻€?+        """
++        """把一条明细追加写入 ``{out_dir}/oob_keypoints_log.txt``。
++
++        备注：训练时本变换会在多个 dataloader worker 中各持一份，
++        因此在同一文件上可能有并发追加。这里保证"一条记录一次
++        ``write``"，即便行顺序交错也不会丢数据或串行。
++        """
 +        import json
 +        try:
 +            os.makedirs(self.out_dir, exist_ok=True)
@@ -677,8 +794,8 @@ index 00000000..f41cde19
 +            line = json.dumps(record, ensure_ascii=False) + '\n'
 +            with open(path, 'a', encoding='utf-8') as f:
 +                f.write(line)
-+        except Exception as e:  # 鏃ュ織澶辫触涓嶅簲涓柇璁粌
-+            print_log(f'[CheckKeypointOutOfBounds] 鍐欐棩蹇楀け璐? {e}',
++        except Exception as e:  # 日志失败不应中断训练
++            print_log(f'[CheckKeypointOutOfBounds] 写日志失败: {e}',
 +                      logger='current',
 +                      level=30)
 +

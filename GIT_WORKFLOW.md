@@ -100,37 +100,103 @@ DMKPD_dataset/splits/val.txt      480 行
 
 ### 步骤 1：导出 mmpose 改动为 patch
 
+> ⚠️ **关键：必须用 `git diff --output=`，不能用 PowerShell 重定向**
+>
+> 实测踩过：`git diff ... | Out-File` 会写出 **CRLF 行尾**，
+> 而 `git apply` 要求 **LF**，否则报
+> `error: corrupt patch at ...:508`。
+> （PowerShell 的 `Out-File` / `>` 都会做行尾转换）
+
 ```powershell
-# ① 让未跟踪的 transforms.py 也进 diff
+# ① 让未跟踪的 transforms.py 也进 diff（intent-to-add）
 & git -C open-mmlab/mmpose add -N mmpose/datasets/datasets/DM/transforms.py
 
-# ② 生成 patch（--binary 以防有二进制内容）
+# ② 用 git 自己的 --output 直接写文件（保证 LF、无 BOM）
 New-Item -ItemType Directory -Force patches | Out-Null
-& git -C open-mmlab/mmpose diff HEAD --binary |
-    Out-File -Encoding utf8 patches/0001-dmkpd-dataset.patch
+& git -C open-mmlab/mmpose diff HEAD --binary `
+    --output="D:/DMKPD/patches/0001-dmkpd-dataset.patch"
 
 # ③ 撤销 intent-to-add（恢复原状态）
 & git -C open-mmlab/mmpose reset -q mmpose/datasets/datasets/DM/transforms.py
-
-# ④ 验证
-Get-Item patches/0001-dmkpd-dataset.patch |
-    Select-Object Name, Length
-(Get-Content patches/0001-dmkpd-dataset.patch).Count
 ```
 
-**期望结果**：约 41 KB / 1200 行。
-patch 里应包含 5 个文件的 `diff --git` 段。
+#### 验证（**务必做**，实测过它的价值）
+
+```powershell
+# 编码检查：应输出 BOM=无 / CRLF=0 / LF=819
+$b=[System.IO.File]::ReadAllBytes('patches\0001-dmkpd-dataset.patch')
+"BOM: $(if($b[0] -eq 239){'有(错!)'}else{'无'})"
+$crlf=0;$lf=0; for($i=0;$i -lt $b.Length;$i++){ if($b[$i] -eq 10){
+  if($i -gt 0 -and $b[$i-1] -eq 13){$crlf++}else{$lf++} } }
+"CRLF: $crlf  LF: $lf"
+
+# 与工作区一致性：应 exit=0
+& git -C open-mmlab/mmpose apply --reverse --check `
+    (Resolve-Path patches/0001-dmkpd-dataset.patch).Path
+"reverse --check exit=$LASTEXITCODE"
+```
+
+#### 完整还原测试（可选，但强烈建议迁移前跑一次）
+
+我写了 `_check_patch.py` 做这件事：干净 clone → apply → 逐文件比对 sha256。
+
+```powershell
+& '.\.venv\Scripts\python.exe' _check_patch.py
+```
+
+**实测输出**（全部通过）：
+```
+[编码检查]  BOM 无(正确) / CRLF 0（正确） / LF 819
+[干净克隆]  HEAD 759b39c1 -> 克隆后 759b39c1
+[克隆后应保持官方原状]
+  新增文件 不存在(符合预期) × 4
+  已有文件 存在=True 含我们的改动=False
+[apply patch]  exit=0
+[逐文件比对]
+  configs/_base_/datasets/DMKPD_meta.py          48/48    OK
+  mmpose/datasets/datasets/DM/__init__.py         4/4     OK
+  mmpose/datasets/datasets/DM/registry.py       522/522   OK
+  mmpose/datasets/datasets/DM/transforms.py     209/209   OK
+  mmpose/datasets/datasets/__init__.py           12/12    OK
+[反向验证]  exit=0
+结论：patch 可完整还原全部 5 个文件的改动 —— 路径 B 可行
+```
+
+> **这个验证的意义**：它把"patch 能不能用"从**假设**变成**事实**。
+> 迁移到新机时如果走路径 B（clone + apply），你不会卡住。
 
 ### 步骤 2：处理 mmpose 仓库里的杂项
 
 ```powershell
 # vis_results.jpg 是实验残留，删掉（patch 里不该有它）
 Remove-Item open-mmlab/mmpose/vis_results.jpg -Force -EA SilentlyContinue
-
-# 给 mmpose 自己的仓库也加个忽略（可选，但它自带 .gitignore 通常够用）
 ```
 
-### 步骤 3：初始化外层仓库
+### 步骤 3：❗验证 `.gitignore` 里的 mmdet 规则（**实测踩过**）
+
+`.gitignore` 里已有 `mmdet/`，但**必须验证**。原因：
+
+> **`mmdet` 是一个 Windows junction**（目录联接），指向
+> `.venv/Lib/site-packages/mmdet`。漏写忽略规则时，**git 会穿透
+> junction**，把 site-packages 里 mmdet 的 **1466 个文件**全加进版本控制。
+> 实测被跟踪文件数从 **54 暴涨到 1520**。
+
+更危险的是：**git 删除 junction 时可能连带删除目标目录的真实内容** ——
+也就是会把 site-packages 里的 mmdet **删掉**。
+
+```powershell
+git add -A
+git ls-files mmdet/ | Measure-Object -Line     # ❗必须是 0
+```
+
+若不为 0：
+```powershell
+git rm -r --cached mmdet -q
+# 确认 .gitignore 里有 `mmdet/`（带斜杠，精确匹配目录；
+# 写 `mmdet*` 会误伤 mmdet_xxx.py 之类的文件）
+```
+
+### 步骤 4：初始化外层仓库
 
 ```powershell
 git init
@@ -148,17 +214,39 @@ git commit -m "feat: DMKPD 姿态+检测全流程
 - patches/: mmpose 的 5 文件改动（DMKPD_dataset 注册等）"
 ```
 
-### 步骤 4：❗关键检查 —— 确认 patches 被跟踪、mmpose 没被跟踪
+### 步骤 5：❗关键检查 —— 确认 patches 被跟踪、大目录没被跟踪
 
 ```powershell
-# 应该看到 patches/0001-dmkpd-dataset.patch
-git ls-files patches/
+# 被跟踪文件总数：**应该是 54**（实测值）
+(git ls-files).Count
 
-# 应该**为空**（mmpose 已被忽略）
-git ls-files open-mmlab/
+# 以下**全部必须为 0**
+foreach ($d in @('open-mmlab','.venv','work_dirs','modelbase_test',
+                 'submission','vis_out2','mmdet')) {
+    "{0,-16}: {1}" -f $d, (git ls-files "$d/").Count
+}
 
-# 确认仓库体积（应该 < 5 MB）
-git count-objects -vH
+# 以下必须有内容
+"patches    : $((git ls-files patches/).Count)"        # 应为 1
+"splits     : $((git ls-files DMKPD_dataset/splits/).Count)"  # 应为 2
+"det_dataset: $((git ls-files det_dataset/).Count)"    # 应为 4
+```
+
+### 步骤 6：检查仓库体积
+
+```powershell
+git count-objects -vH | Select-String 'size-pack'
+```
+
+**实测：2.60 MiB**（纯代码 + 少量标注，非常健康）
+
+被跟踪的 5 个最大文件（实测）：
+```
+det_dataset/annotations/instances_train.json        4.7 MB
+DMKPD_dataset/splits/train.txt                      332 KB
+det_dataset/annotations/instances_val.json          264 KB
+det_dataset/annotations/instances_holdout1702.json  145 KB
+patches/0001-dmkpd-dataset.patch                     41 KB
 ```
 
 ---
@@ -311,7 +399,19 @@ New-Item -ItemType Junction -Path mmdet -Target "$PWD\.venv\Lib\site-packages\mm
 直接拷过去最稳,不会遇到 patch 上下文不匹配的问题。
 
 `patches/` 的真正价值在于**记录"我们改了什么"** —— 让你随时能
-`git diff` 看清这 575 行自定义代码,以及将来 mmpose 升级时知道要重打哪些补丁。
+`git diff` 看清这 667 行自定义代码,以及将来 mmpose 升级时知道要重打哪些补丁。
+
+路径 B 的实测细节（已用 `_check_patch.py` 验证过）：
+```powershell
+& git clone https://github.com/open-mmlab/mmpose.git open-mmlab/mmpose
+& git -C open-mmlab/mmpose checkout 759b39c1     # 对齐我们的基线 commit
+& git -C open-mmlab/mmpose apply (Resolve-Path ..\patches\0001-dmkpd-dataset.patch).Path
+# exit=0 表示成功；5 个文件的 sha256 与本机一致
+```
+⚠️ 注意两点：
+- **必须 checkout `759b39c1`**（patch 的基线），否则上下文可能对不上
+- `open-mmlab/mmpose` 本地仓库**无 remote**，所以要先从 GitHub clone
+  官方仓库，再 checkout 到那个 commit
 
 ---
 
