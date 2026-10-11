@@ -102,8 +102,13 @@ submission/
 # 注意 patterns 写法：`*_out.txt` 会匹配根目录下所有以 _out.txt
 # 结尾的文件，如 `_train_out.txt` / `_det_train_out.txt` /
 # `_step_out.txt` / `_env_out.txt` 等，约 25 个。
+#
+# `*_out2.txt` 要单独写！`*_out.txt` **匹配不到** `_rt_out2.txt`
+# （实测踩过：`_rt_out2.txt` 被漏进来跟踪了）。
 # ---------------------------------------------------------------- #
 *_out.txt
+*_out2.txt
+*_out3.txt
 *_stdout.txt
 _dbg_*.txt
 _tmp_*.txt
