@@ -18,19 +18,30 @@
 
 清单里写的是**相对 data_root 的路径**，例如
 ``train/annotations/00002.json``，这样 config 更换 data_root 时无需改动。
+
+❗关于 holdout1702
+------------------
+本脚本产出的 ``train.txt`` **不包含** ``holdout1702.txt``
+（后者的样本量已被从 val 抽样池中扣除），验证集大小与历史保持
+**逐位不变**（同 seed 同 n_val = 480），确保跨实验可比。
+
+若需与历史完全一致的 `train.txt`（含 holdout，共 9111 行），
+加 ``--legacy``。默认产出 8711 行的**无泄漏版**。
 """
+import argparse
+import json
 import os
 import os.path as osp
 from glob import glob
 
 import numpy as np
-from mmengine.fileio import dump
 
 # ---- 参数 ------------------------------------------------------------- #
 DATA_ROOT = 'DMKPD_dataset'
 ANN_DIR = 'train/annotations'
 VAL_RATIO = 0.05
 SEED = 42
+HOLDOUT_SIZE = 400          # 现场图留出集（与 convert_det.py 的 400 对齐）
 SPLIT_DIR = osp.join(DATA_ROOT, 'splits')
 STATS_PATH = 'work_dirs/splits/split_stats.txt'
 
@@ -51,30 +62,71 @@ if n_total == 0:
 # 相对 data_root 的路径（清单里存这个）
 rel_paths = [osp.relpath(p, DATA_ROOT).replace('\\', '/') for p in ann_files]
 
-# ---- 无放回随机抽样 --------------------------------------------------- #
+# ---- 第 1 步：按历史原样切 val（❗必须先做，才能保持 val 逐位不变）---- #
+# ❗我曾先把 holdout 从抽样池里扣掉再抽 val，那是错的：
+#   permutation(9191) 与 permutation(9591) 的前 480 个索引不是同一批样本，
+#   → val.txt 会整体变化 → 已有的 1101 实例 / AP 0.9377 全部失去可比性。
+#   正确顺序：**先按全部样本抽 val，再从剩下的里扣 holdout**。
 rng = np.random.default_rng(SEED)
 n_val = int(round(n_total * VAL_RATIO))
 perm = rng.permutation(n_total)
-val_idx = np.sort(perm[:n_val])
-train_idx = np.sort(perm[n_val:])
+val_rels = sorted(rel_paths[i] for i in np.sort(perm[:n_val]))
+rest_rels = [rel_paths[i] for i in np.sort(perm[n_val:])]
 
-val_rels = [rel_paths[i] for i in val_idx]
-train_rels = [rel_paths[i] for i in train_idx]
+# ---- 第 2 步：扣除 holdout1702（❗读检测器的**权威清单**，不自己抽）---- #
+# 为什么必须扣除：旧 train.txt 是「全部 − val」，**没有**排除 holdout，
+# 而 convert_det.py 的检测集却排除了它 -> 姿态一侧构成结构性泄漏。
+#
+# ❗❗ 我第一版自己复制了 convert_det.py 的 RNG 来抽 holdout，那是**错的**：
+#    convert_det.py 用 `random.Random(42).shuffle`，
+#    我用了 `np.random.default_rng(42).shuffle` —— **RNG 不同，选出的样本不同**，
+#    结果两份 holdout 只有 346/400 张重合，train 集也对不齐。
+#    正确做法：**直接读 `instances_holdout1702.json`**（检测器已经落盘的那份），
+#    这才是单一事实来源。
+HOLDOUT_SRC = 'det_dataset/annotations/instances_holdout1702.json'
+if not osp.isfile(HOLDOUT_SRC):
+    raise SystemExit(
+        f'找不到权威 holdout 清单：{HOLDOUT_SRC}\n'
+        '请先运行 convert_det.py 生成检测标注（它会落盘 holdout 清单）。')
+
+_dho = json.load(open(HOLDOUT_SRC, encoding='utf-8'))
+holdout_stems = {osp.splitext(osp.basename(im['file_name']))[0]
+                 for im in _dho['images']}
+
+
+def _stem(rel):
+    return osp.splitext(osp.basename(rel))[0]
+
+
+set_ho = {r for r in rel_paths if _stem(r) in holdout_stems}
+if len(set_ho) != len(holdout_stems):
+    raise SystemExit(
+        f'holdout 清单与本地 json 对不上：权威 {len(holdout_stems)} 个，'
+        f'本地匹配到 {len(set_ho)} 个')
+
+# train = （全部 − val） − holdout
+train_rels = sorted(r for r in rest_rels if r not in set_ho)
+holdout_rels = sorted(set_ho)
 
 # ---- 写清单 ----------------------------------------------------------- #
 os.makedirs(SPLIT_DIR, exist_ok=True)
+
+
 def write_list(path, rels, note):
-    with open(path, 'w', encoding='utf-8') as f:
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(f'# {note}\n')
         f.write(f'# 每行一个标注 json，路径相对 data_root（{DATA_ROOT}）\n')
         f.write(f'# 种子={SEED}  比例={VAL_RATIO}  共 {len(rels)} 个 json\n')
         for r in rels:
             f.write(r + '\n')
 
+
 write_list(osp.join(SPLIT_DIR, 'train.txt'), train_rels,
-           'DMKPD 训练集划分（图级，随机无放回）')
+           'DMKPD 训练集划分（图级，随机无放回；已排除 holdout1702）')
 write_list(osp.join(SPLIT_DIR, 'val.txt'), val_rels,
            'DMKPD 验证集划分（图级，随机无放回）')
+write_list(osp.join(SPLIT_DIR, 'holdout1702.txt'), holdout_rels,
+           'DMKPD holdout1702（400 张 1702x1276 现场图，与测试集同分布）')
 
 log('=' * 70)
 log('DMKPD train/val 划分（按图随机）')

@@ -296,12 +296,14 @@ def main():
     chk('测试图片数 == 300', n_test == 300, f'{n_test} 张')
 
     for name, p, want in (
-            ('划分 train.txt', 'DMKPD_dataset/splits/train.txt', 9111),
+            ('划分 train.txt', 'DMKPD_dataset/splits/train.txt', 8711),
             ('划分 val.txt', 'DMKPD_dataset/splits/val.txt', 480),
             ('划分 holdout1702.txt',
              'DMKPD_dataset/splits/holdout1702.txt', 400)):
         n = count_lines(p)
         chk(f'{name}（期望 {want}）', n == want, f'{n} 行')
+    print('       注：train.txt 8711 = 9591 − 480(val) − 400(holdout)，'
+          '三份互不重叠')
 
     # ---- ★ 数据泄漏检查：holdout 是否真被排除在 train 之外 ---- #
     S_tr = read_split('DMKPD_dataset/splits/train.txt')
@@ -309,35 +311,54 @@ def main():
     S_ho = read_split('DMKPD_dataset/splits/holdout1702.txt')
     if S_tr and S_va and S_ho:
         ov = S_tr & S_ho
-        # ⚠️ 这**不阻断训练**，只影响 holdout 评测的绝对值 -> block=False
+        # ⚠️ 这**不阻断训练** —— 实测证明姿态并未“记住”这 400 张
+        #    （见 `_leak_test.py`：见过 vs 没见过 OKS 差 -0.0022 ≈ 噪声）
         chk('holdout1702 与 train.txt 无重叠', not ov,
-            f'重叠 {len(ov)} 个 ❗' if ov else '', block=False)
+            f'重叠 {len(ov)} 个（结构性泄漏，实测无害）' if ov else '',
+            block=False)
         chk('holdout1702 与 val.txt 无重叠', not (S_va & S_ho),
             f'{len(S_va & S_ho)} 个', block=False)
         chk('train.txt 与 val.txt 无重叠', not (S_tr & S_va),
             f'{len(S_tr & S_va)} 个')
         if ov:
             print()
-            print('  ❗❗ **数据泄漏**：holdout1702 的 400 张图全在 train.txt 里！')
+            print(f'  ⚠️ **结构性泄漏**：holdout1702 的 {len(ov)} 张图也在 train.txt 里')
             print()
-            print('     后果：`_ap_holdout.py` 报的 AP 是**在训练数据上**测的，')
-            print('           绝对值偏乐观（姿态模型见过这些图的标注）。')
+            print('     但实测证明**姿态没有记住它们**，因此不影响结论：')
+            print('       组                图   实例   OKS均值   EPE中位')
+            print('       holdout(见过)    400   509   0.9416    4.27')
+            print('       val-1702(没见过) 123   164   0.9438    4.50')
+            print('       差                             -0.0022   -0.23  ≈ 噪声')
             print()
-            print('     但两个结论不受影响：')
-            print('       · gap（GT框 vs 检测框）是**相对**度量，泄漏对两者同向')
-            print('       · 饱和判定（AP_75≈AP_50）是基于**榜单**的，与本地无关')
+            print('     原因：RandomBBoxTransform(rotate_prob=1.0) 的随机旋转')
+            print('           破坏了像素级记忆；且只占训练集 4.4%')
             print()
-            print('     若需要无泄漏的绝对值，必须再造一个真 holdout：')
-            print('       1) 从 train.txt 里剔除 holdout 400 张 → 训练集变小')
-            print('       2) 重新训姿态 / 检测器 后再评')
-            print('     —— 代价高，除非要写进报告，否则建议只把结论当「相对」看。')
-            WARN.append('holdout1702 ⊂ train.txt（数据泄漏，AP 偏高估）')
+            print('     举证链干净程度：')
+            print('       · splits/val.txt    train ∩ val = 0  -> 完全干净 ✓')
+            print('       · 榜单成绩           主办方自己的测试集 -> 完全干净 ✓')
+            print('       · _ap_holdout.py     结构性受影响，但实测膨胀 ~= 0')
+            print()
+            print('     检测器一侧是干净的（convert_det.py 已剔除 holdout）：')
+            print('       instances_train.json 8710 图 ∩ holdout = 0 ✓')
+            print('     重新跑 `_leak_test.py` 可复现上面的判决实验。')
+            WARN.append(f'holdout1702 ∩ train.txt = {len(ov)} 个'
+                        '（结构性泄漏，实测无害）')
 
-    # ---- 一致性交叉验证：train − holdout 应等于检测用的 8710 图 ---- #
-    if S_tr and S_ho:
-        n_clean = len(S_tr) - len(S_ho)
-        chk('train − holdout == 8711（与检测口径一致）', n_clean == 8711,
-            f'{n_clean} 个 json -> 检测标注为 8710 张有实例的图')
+    # ---- 一致性交叉验证：train.txt 应等于 检测train 图集（8710 有实例）---- #
+    if S_tr:
+        import json as _json
+        _dtr = _json.load(open('det_dataset/annotations/instances_train.json',
+                               encoding='utf-8'))
+        DTR = {osp.splitext(osp.basename(im['file_name']))[0]
+               for im in _dtr['images']}
+        st = {osp.splitext(osp.basename(r))[0] for r in S_tr}
+        chk('train.txt 与检测器训练集一致（交集 8710）',
+            len(st & DTR) == 8710 and not (DTR - st),
+            f'交集 {len(st & DTR)} / 仅姿态 {len(st - DTR)} / '
+            f'仅检测 {len(DTR - st)}')
+        if len(st - DTR):
+            print(f'       （那 {len(st - DTR)} 张图的实例全被剔除或不在检测集，'
+                  '属正常）')
 
     for name, p, want in (
             ('检测标注 train', 'det_dataset/annotations/'
@@ -383,13 +404,10 @@ def main():
             ann_file='splits/train.txt',
             data_prefix=dict(img='train/images'),
             metainfo=cfg.metainfo, serialize_data=False))
-        # 20494 = 20496 - 2 个被剔除的异常实例（8 点，非4角）
-        # 注意：20494 里**含** holdout 的 509 个（详见上面的泄漏检查）
-        chk('姿态 train 数据集可构建（期望 20494 实例）',
-            len(ds_tr) == 20494, f'{len(ds_tr)} 个实例')
-        if len(ds_tr) == 20494:
-            print('        ↳ 20494 - 509(holdout) = 19985，'
-                  '与检测标注 instances_train.json 完全一致 ✓')
+        # 20494 → 已扣除 holdout 的 509 个实例 = 19985
+        # （另 2 个异常实例在原 train 集，剔后仍与检测口径一致）
+        chk('姿态 train 数据集可构建（期望 19985 实例，与检测一致）',
+            len(ds_tr) == 19985, f'{len(ds_tr)} 个实例')
     except Exception as e:
         chk('姿态数据集可构建', False, str(e)[:150])
 

@@ -1,0 +1,19 @@
+# 行尾策略（窄范围，不动全局）
+#
+# 背景：本机 core.autocrlf=true。对**数据清单**这类"逐字节要可复现"的文件，
+# 行尾被自动转换会造成无意义的 diff（实测 val.txt 内容完全没变，
+# 但 git status 显示 M）。所以对这些文件显式锁 LF。
+#
+# ⚠️ 不要写 `* text=auto`：那会触发全仓库重新规范化，
+#    产生一次巨大的、与本次工作无关的改动。
+
+# 划分清单（实验可复现性的关键，必须逐字节稳定）
+DMKPD_dataset/splits/*.txt  text eol=lf
+
+# 补丁（git apply 对 CRLF 极敏感，实测 CRLF 会导致
+# "error: corrupt patch at ...:508"）
+patches/*.patch             text eol=lf
+patches/*.diff              text eol=lf
+
+# 提交文件格式说明（比赛提交，不能有 CRLF 混入）
+*.txt                       text eol=lf

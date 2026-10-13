@@ -1,7 +1,6 @@
-# DMKPD holdout1702 划分（现场图 1702x1276，与测试集同分布）
-# 从 train 的 1702 档随机取 400 张（seed 42），不参与训练
+# DMKPD holdout1702（400 张 1702x1276 现场图，与测试集同分布）
 # 每行一个标注 json，路径相对 data_root（DMKPD_dataset）
-# 共 400 个 json
+# 种子=42  比例=0.05  共 400 个 json
 train/annotations/00002.json
 train/annotations/00005.json
 train/annotations/00006.json
