@@ -259,11 +259,12 @@ D:\DMKPD\
 ├── modelbase_test\
 │   ├── td-hm_hrnet-w48_....pth          257 MB
 │   └── rtmdet_tiny_8xb32-....pth         55 MB
-├── open-mmlab\              mmpose 源码
+├── open-mmlab\              ❗**不进 git**，按 §5.5 重建 + 打 patch
 ├── det_dataset\             ✅ 来自 git
 ├── patches\                 ✅ 来自 git
 ├── config.py config_det.py run_train.py run_train_det.py ...
-└── _env_check.py            ✅ 来自 git
+├── _env_check.py            ✅ 来自 git（环境体检）
+└── _preflight_check.py      ✅ 来自 git（训练前置校验，见 §6.4）
 ```
 
 ### 4.2 核对
@@ -454,6 +455,73 @@ cd D:\DMKPD
 | `mmdet junction 可解析` FAIL | 重跑 §5.6 |
 | 数据文件缺失 | 重做 §4.1 |
 | `姿态/检测模型可构建` FAIL | 看具体报错，多半是依赖问题 |
+
+### 6.4 ❗再跑一次「训练前置校验」
+
+`_env_check.py` 只回答**「这台机器能不能跑」**；
+`_preflight_check.py` 回答**「这次训练能不能按我预期的参数跑、要多久、有坑吗」**。
+
+```powershell
+# 我要从头训 12 轮姿态
+& '.\.venv\Scripts\python.exe' _preflight_check.py --epochs 12 --val-interval 1
+```
+
+它检查 9 节：解释器依赖 / **open-mmlab 的 5 个 patch 文件** / 数据集完整性
+/ 权重文件 / **work_dir 残留** / **调度器按 --epochs 重算的预览** /
+数据管线前向 / **GPU 训练冒烟 + 耗时估算** / 结论。
+
+#### ★ 它专门会抓的两个坑
+
+**坑 1：续训陷阱**
+
+`run_train.py` 的逻辑是「在 work_dir 下按 **mtime** 找任意 `*.pth`，
+找到就把 `runner._resume = True`」。所以只要 `work_dirs/dmkpd/` 里
+还留着 `epoch_5.pth`，**即使你写了 `--epochs 12` 也会从第 5 轮接着训**，
+而不是从头训 12 轮。
+
+脚本会打印 work_dir 下的所有权重并给出两种解法：
+
+```powershell
+# 解法 A（推荐，保持目录干净）
+New-Item -ItemType Directory -Force work_dirs\dmkpd\_old_best
+Move-Item work_dirs\dmkpd\*.pth work_dirs\dmkpd\_old_best\ -Force
+Remove-Item work_dirs\dmkpd\last_checkpoint -Force -ErrorAction SilentlyContinue
+
+# 解法 B（保留原目录，靠参数绕过）
+#   命令里加 --no-resume
+```
+
+**坑 2：调度器随 `--epochs` 重算**
+
+`run_train.py` 会把 `MultiStepLR.milestones` 重算为 `[int(epochs * 0.8)]`：
+
+| `--epochs` | milestones | 含义 |
+|---|---|---|
+| 8 | `[6]` | 最后 2 轮微调 |
+| 12 | `[9]` | 最后 3 轮微调 |
+| 24 | `[19]` | 最后 5 轮微调 |
+
+注意这**不是**官方 210 epoch 的 `168` 的等比缩放，属于我们自己的约定。
+脚本会把它打印出来，避免「以为 lr 会降结果没降」。
+
+#### 它会报出 `holdout1702 ⊂ train.txt`（数据泄漏）
+
+这是**已确认的既存事实**，不是新 bug：
+
+```
+train.txt 9111      ← = 9591 - 480，只排除了 val
+holdout ∩ train = 400 个（全部）❗
+检测用 train = train − holdout = 8711（其中 8710 张有实例）
+```
+
+后果：`_ap_holdout.py` 报的 AP 是**在训练数据上**测的，绝对值偏乐观。
+但**不影响两个关键结论**：
+
+- **gap（GT框 vs 检测框）**是相对度量，泄漏对两者同向 → 差值仍可信
+- **饱和判定**（`AP_75 ≈ AP_50`）来自**榜单**，与本地无关
+
+若要无泄漏的绝对值，须从 `train.txt` 剔除 holdout 后**重新训练** —— 代价高。
+除非要写进报告，建议只把 holdout 结论当「相对」看。
 
 ---
 
