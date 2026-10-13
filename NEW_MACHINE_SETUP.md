@@ -25,10 +25,16 @@
 - [四、新机：拷数据与权重](#四新机拷数据与权重)
 - [五、新机：建虚拟环境 + 装依赖](#五新机建虚拟环境--装依赖)
 - [六、新机：环境自检（❗必做）](#六新机环境自检必做)
-- [七、新机：开始训练](#七新机开始训练)
-- [八、训练完：回传权重](#八训练完回传权重)
-- [九、本机：接权重 + 推理 + 提交](#九本机接权重--推理--提交)
+- [七、新机：开始训练姿态（12 epoch）](#七新机开始训练姿态12-epoch)
+- [八、训练完：回传姿态权重](#八训练完回传姿态权重)
+- [九、本机：接权重 + 评测 + 提交](#九本机接权重--评测--提交)
 - [十、报错对照表](#十报错对照表)
+- [附：完整命令速查](#附完整命令速查)
+- [附：职责边界总结](#附职责边界总结)
+
+> **新机已训过检测器（24 epoch）** → §一~§六 已完成，直接看 **§七**。
+>
+> **如果只是要「一条命令」，看文末「附：完整命令速查」的 B + C 两节。**
 
 ---
 
@@ -567,157 +573,209 @@ train ∩ holdout = 0    val ∩ holdout = 0    train ∩ val = 0   ✓
 
 ---
 
-## 七、新机：开始训练
+## 七、新机：开始训练姿态（12 epoch）
 
-### 7.1 ❗先测显存与速度（可选但推荐）
+> **前提**：新机已经配好环境并训过检测器（24 epoch），
+> 所以 §1–§6 **不需要重做**，只要 `git pull` 拿到最新代码与划分。
 
-4060 有 **8 GB** 显存（开发机只有 4 GB），可以放大 batch size。
-先测一下最佳配置：
-
-```powershell
-& '.\.venv\Scripts\python.exe' _det_bench2.py
-```
-
-**开发机的基准**（用于对比）：
-```
-输入        bs   峰值显存   s/iter   epoch(9110图)
-1024x1024    2     1.75G    0.254      19.3min
-1024x1024    4     3.21G    0.516      19.6min   ← 当前配置
-```
-
-**在 4060 上试**：`bs=6`、`bs=8` 看显存是否够。
-如果 bs=8 能放下，训练速度会明显提升。
-
-### 7.2 ❗batch size 变了必须改 lr
-
-```python
-# 当前（bs=4）
-lr = 0.004 * (4/32) = 5e-4
-
-# 如果改成 bs=8
-lr = 0.004 * (8/32) = 1e-3
-```
-
-**改法**：这是配置变更，按纪律应该**在本机改后 push**。
-临时方案：用启动器的命令行参数覆盖（如果支持），或先按 bs=4 跑。
-
-> **建议**：第一次先用 **bs=4 原样跑通**，确认流程无误。
-> 第二轮再优化 bs/lr。
-
-### 7.3 启动训练
+### 7.0 ❗先 `git pull`（本次要更新的关键内容）
 
 ```powershell
 cd D:\DMKPD
 
-& '.\.venv\Scripts\python.exe' run_train_det.py `
-    --epochs 24 --val-interval 3 --no-resume `
-    > _det_train_out.txt 2>&1
+# 本机已 push 的最新提交
+git pull origin master
+
+# 核对三个划分文件（本次已修复泄漏）
+Get-Content DMKPD_dataset\splits\train.txt | Where-Object {$_ -and $_ -notmatch '^#'} | Measure-Object -Line
+Get-Content DMKPD_dataset\splits\val.txt   | Where-Object {$_ -and $_ -notmatch '^#'} | Measure-Object -Line
+Get-Content DMKPD_dataset\splits\holdout1702.txt | Where-Object {$_ -and $_ -notmatch '^#'} | Measure-Object -Line
+```
+
+期望：**8711 / 480 / 400**（合计 9591）。
+
+| 清单 | 旧（本次修前） | **新（修后）** |
+|---|---|---|
+| `train.txt` | 9111（含 holdout，有泄漏） | **8711** ✅ |
+| `val.txt` | 480 | 480（**逐位不变**） |
+| `holdout1702.txt` | 400（不在 splits 里） | 400（已纳入） |
+
+**若还是 9111 → `git pull` 没生效**，检查是否在正确的分支/目录。
+
+### 7.1 ❗跑训练前置校验（必做，10 秒）
+
+```powershell
+& '.\.venv\Scripts\python.exe' _preflight_check.py --epochs 12 --val-interval 1
+```
+
+它会检查 9 节，包括两个**会静默坑你**的点：
+
+**(a) 续训陷阱** —— `run_train.py` 会「在 `work_dirs/dmkpd/` 下按 mtime
+找任意 `*.pth` 就续训」。新机若残留权重，写 `--epochs 12` 也会从旧轮次接着训。
+→ 所以启动命令里**必须加 `--no-resume`**（见 §7.3）
+
+**(b) 调度器随 `--epochs` 重算** —— `run_train.py` 会把
+`MultiStepLR.milestones` 改成 `[int(epochs*0.8)]`：
+
+| `--epochs` | milestones | 含义 |
+|---|---|---|
+| **12** | **[9]** | lr 在 ep9 降 10 倍，最后 3 轮微调 |
+| 24 | [19] | 最后 5 轮微调 |
+
+脚本会打印一张「config.py 原值 vs 本次实际生效」的对照表，
+**避免"以为 lr 会降、结果没降"**。
+
+校验最后一行必须是 `✅ 检查通过 —— 可以开训。`（退出码 0）。
+
+### 7.2 ❗关于 batch size（建议先用 bs=4 不动）
+
+4060 有 8 GB 显存，姿态模型实测**峰值仅 1.85 GB**（bs=4）。
+显存完全不是瓶颈，**所以没必要动 bs**。
+
+若要加大（提速有限，实测 bs=8 相对 bs=4 只有 1.12x），
+**必须同步改 lr**（姿态是 Adam，`lr = 5e-4`）：
+
+```
+bs=4 → lr 5e-4（当前）
+bs=8 → lr 1e-3
+```
+
+⚠️ 这是**配置变更**，按纪律应在本机改后 push。
+建议第一轮**原样按 bs=4 跑通**，不要引入额外变量。
+
+### 7.3 ✅ 启动训练（核心命令）
+
+```powershell
+cd D:\DMKPD
+
+& '.\.venv\Scripts\python.exe' run_train.py `
+    --epochs 12 --val-interval 1 --no-resume `
+    > _pose_train_out.txt 2>&1
 ```
 
 **参数说明**：
 
-| 参数 | 说明 |
+| 参数 | 为什么这么设 |
 |---|---|
-| `--epochs 24` | 总 epoch（P1 建议值） |
-| `--val-interval 3` | 每 3 epoch 验证一次并保存 best |
-| `--no-resume` | ❗**从 COCO 预训练权重开始**，不续训 |
-| 重定向到文件 | 避免控制台 GBK 编码问题 |
+| `--epochs 12` | 见下方「为什么是 12」 |
+| `--val-interval 1` | 姿态 val 只要 **39 秒/次**（0.14 s/it × 276 it），比检测器（2~3 min）便宜得多 → **每轮都验，无脑开** |
+| `--no-resume` | ❗**从 COCO 预训练权重开始**，不续训（见 §7.1(a)） |
+| `> _pose_train_out.txt` | 避免控制台 GBK 编码问题，且方便看日志 |
 
-**为什么加 `--no-resume`**：启动器会读 `work_dirs/dmkpd_det/last_checkpoint`
-并自动续训。新机没有 `work_dirs`，本来就相当于 no-resume；
-但显式加上更清晰（若之前跑过一半想重来，也能干净开始）。
+#### 为什么是 12 轮（而不是照搬检测器的 24）
 
-### 7.4 建议用 `nohup` 式后台运行
+两条曲线的形状**完全不同** —— 这是决策依据：
 
-24 epoch 约 **6~8 小时**（4060 上可能更快）。建议：
+```
+姿态（5轮，最后一点最高，还在涨）:
+  ep1 0.8308  ep2 0.8906  ep3 0.8983  ep4 0.8758  ep5 0.9377 ← 最高，且是最后一点
+
+检测器（24轮，已躺平）:
+  ep18 0.9250  ep21 0.9280  ep24 0.9280 ← 21→24 零增长
+```
+
+检测器是"已经收敛所以停"，姿态是"还没看到平台"，所以：
+**先 12 轮拿曲线，按形状决定要不要续到 24**，而不是一次拍 24。
+
+#### 预期耗时
+
+| 机器 | 每 epoch | 12 epoch |
+|---|---|---|
+| GTX 1650（本机实测） | **35.1 min** | **≈ 7.15 h** |
+| RTX 4060（估） | 明显更快 | 以 `_preflight_check.py` 实测为准 |
+
+`_preflight_check.py` 第 8 节会用**本机实测的 s/iter** 给出 ETA
+（换机后必须重跑，不要照搬 1650 的数字）。
+
+### 7.4 后台运行（推荐，7+ 小时别开着窗口）
 
 ```powershell
-# 方式 1：Start-Process 后台
 Start-Process -FilePath '.\.venv\Scripts\python.exe' `
-    -ArgumentList 'run_train_det.py','--epochs','24','--val-interval','3','--no-resume' `
-    -RedirectStandardOutput '_det_train_out.txt' `
-    -RedirectStandardError '_det_train_err.txt' `
+    -ArgumentList 'run_train.py','--epochs','12','--val-interval','1','--no-resume' `
+    -RedirectStandardOutput '_pose_train_out.txt' `
+    -RedirectStandardError  '_pose_train_err.txt' `
     -NoNewWindow
-
-# 方式 2：直接在终端跑，别关窗口
 ```
 
 ### 7.5 训练中监控
 
 ```powershell
-# 看日志尾部
-Get-Content _det_train_out.txt -Tail 20
+# 看进度（含 loss / lr / ETA / GPU 温度）
+Get-Content _pose_train_out.txt -Tail 20
 
-# 或看 mmengine 自己的日志
-$d = Get-ChildItem work_dirs\dmkpd_det -Directory | Sort-Object Name | Select-Object -Last 1
-Get-Content "$($d.FullName)\$($d.Name).log" -Tail 10
+# 看验证指标（每轮一次）
+Get-Content _pose_train_out.txt | Select-String 'coco/AP:' | Select-Object -Last 5
 ```
 
-**关注指标**（P1 指出这两个最关键）：
-```
-coco/bbox_mAP_s   小目标（<40px）  ← P1 显示漏检最严重
-coco/bbox_mAP_m   中目标（60-120px）← P1 显示漏检绝对数最多
-```
+**关注这几项**：
+
+| 指标 | 看什么 |
+|---|---|
+| `coco/AP` | 主指标，看是否还在涨 |
+| `coco/AP .75` | 若与 `AP .5` 接近 → 已饱和 |
+| `EPE` | 定位误差（px），中位比均值更有意义 |
+| `lr` | 确认 ep9 之后降了 10 倍 |
 
 ### 7.6 ⚠️ 笔记本的两个坑
 
 | 坑 | 说明 |
 |---|---|
-| **必须插电** | 电池模式下 GPU 会大幅降频。实测开发机 CPU 满载时功耗 40-47W，笔记本更依赖外接电源 |
-| **散热降频** | 长时间满载（6-8 小时）容易撞温度墙。`run_train_det.py` 的 `GpuMonitor` 会记录 `clock_sm`，**如果它持续低于标称值就是降频了** |
+| **必须插电** | 电池模式 GPU 大幅降频。 |
+| **散热降频** | 长时满载易撞温度墙。`run_train.py` 的 `GpuMonitor` 会记录 `clock_sm`，持续低于标称值就是降频了 |
 
-**建议**：垫高机身 / 用散热垫；训练结束后看日志里的
-`GPU 采样` 报告（会输出温度、功耗、频率的均值/最大值）。
+**参考**：本机 1650 满载 82~86°C（散热受限），`clocks.sm` 恒 1740 未降频。
+训练结束会打印 GPU 利用率/温度/功耗的均值与峰值。
 
 ---
 
-## 八、训练完：回传权重
+## 八、训练完：回传姿态权重
 
-### 8.1 确认训练产物
+### 8.1 确认产物
 
 ```powershell
 cd D:\DMKPD
-Get-ChildItem work_dirs\dmkpd_det\*.pth |
+Get-ChildItem work_dirs\dmkpd\*.pth |
     Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 ```
 
-会看到：
+会看到（姿态模型比检测器大得多）：
+
 ```
-best_coco_bbox_mAP_epoch_XX.pth    约 40 MB    ← ✅ 要回传这个
-epoch_XX.pth                       约 78 MB    ← 含优化器状态，不必回传
+best_coco_AP_epoch_XX.pth    约 246 MB   ← ✅ 要回传这个
+epoch_XX.pth                 约 731 MB   ← 含优化器状态，不必回传
 ```
 
 ### 8.2 只看 best
 
 ```powershell
-$best = Get-ChildItem work_dirs\dmkpd_det\best_*.pth | Sort-Object LastWriteTime | Select-Object -Last 1
+$best = Get-ChildItem work_dirs\dmkpd\best_*.pth |
+        Sort-Object LastWriteTime | Select-Object -Last 1
 $best.Name
 ```
 
 ### 8.3 ❗记录指标（重要）
 
-回传前把**最终指标**记下来，本机要用：
-
 ```powershell
-# 从日志里抓最后的验证结果
-Get-Content _det_train_out.txt | Select-String 'bbox_mAP' | Select-Object -Last 2
-
-# 或在 mmengine 日志里
-$d = Get-ChildItem work_dirs\dmkpd_det -Directory | Sort-Object Name | Select-Object -Last 1
-Get-Content "$($d.FullName)\$($d.Name).log" | Select-String 'coco/bbox_mAP:' | Select-Object -Last 3
+Get-Content _pose_train_out.txt | Select-String 'coco/AP:' | Select-Object -Last 3
 ```
 
-把这几行**贴给本机**（或记在 `_transfer_back.md` 里一起传回）。
+把最佳那几行**贴给本机**（或写进 `_transfer_back.md` 一起传回）。
+本机需要它来判断"12 轮相对旧 5 轮是涨了还是持平"。
 
-### 8.4 算 hash（核对传输完整性）
+**对比基准**（旧 5 轮，val 1101 实例，GT 框条件）：
+
+| epoch | coco/AP | AP .5 | AP .75 | PCK@0.10 | EPE |
+|---|---|---|---|---|---|
+| 5（旧 best） | **0.9377** | 0.9585 | 0.9485 | 0.9353 | 5.41 |
+
+⚠️ **新旧不完全可比**：旧权重用的是旧 `train.txt`（9111，含 holdout）。
+所以这次是**在同一划分上重训**，顺带得到一个干净基线。
+
+### 8.4 算 hash
 
 ```powershell
 Get-FileHash $best.FullName -Algorithm SHA256 |
-    Select-Object Hash, Path | Tee-Object -Append weights.sha256
-
-# 或直接写文件
-"$($best.Name)  $((Get-FileHash $best.FullName -Algorithm SHA256).Hash)" |
-    Out-File -Append "E:\weights.sha256" -Encoding utf8
+    Select-Object Hash, Path | Tee-Object -Append E:\weights.sha256
 ```
 
 ### 8.5 拷回硬盘
@@ -725,76 +783,75 @@ Get-FileHash $best.FullName -Algorithm SHA256 |
 ```powershell
 New-Item -ItemType Directory -Force "E:\DMKPD_weights" | Out-Null
 Copy-Item $best.FullName "E:\DMKPD_weights\"
-Copy-Item "E:\weights.sha256" "E:\DMKPD_weights\" 2>$null
-```
 
-### 8.6 要不要回传训练日志？
-
-**建议回传**（体积小、信息量大）：
-```powershell
-$d = Get-ChildItem work_dirs\dmkpd_det -Directory | Sort-Object Name | Select-Object -Last 1
+# 顺带回传日志与曲线数据（体积小、信息量大）
+$d = Get-ChildItem work_dirs\dmkpd -Directory |
+     Sort-Object Name | Select-Object -Last 1
 Copy-Item "$($d.FullName)\$($d.Name).log" "E:\DMKPD_weights\train_log.txt"
-Copy-Item "vis_data\*.json" "E:\DMKPD_weights\vis_data\" -Recurse -Force
+Copy-Item "$($d.FullName)\vis_data\*" "E:\DMKPD_weights\vis_data\" -Recurse -Force
+Copy-Item _pose_train_out.txt "E:\DMKPD_weights\train_stdout.txt"
 ```
 
-有了日志，本机可以画训练曲线、分析收敛情况。
+有了日志，本机可以画训练曲线、验证收敛情况。
 
 ---
 
-## 九、本机：接权重 + 推理 + 提交
+## 九、本机：接权重 + 评测 + 提交
 
 ### 9.1 接收并核对 hash
 
 ```powershell
 cd D:\Personal\长安大学\人工智能创新大赛\DMKPD
 
-# 拷入
-Copy-Item "E:\DMKPD_weights\best_*.pth" work_dirs\dmkpd_det\ -Force
+# 先把旧的 best 挪走（避免歧义）
+$ts = Get-Date -f yyyyMMdd_HHmm
+New-Item -ItemType Directory -Force "work_dirs\dmkpd\_old_best_$ts" | Out-Null
+Move-Item work_dirs\dmkpd\best_*.pth "work_dirs\dmkpd\_old_best_$ts\" -Force
+
+# 拷入新权重
+Copy-Item "E:\DMKPD_weights\best_*.pth" work_dirs\dmkpd\ -Force
 
 # 核对 hash（应与新机一致）
-Get-FileHash work_dirs\dmkpd_det\best_*.pth -Algorithm SHA256
+Get-FileHash work_dirs\dmkpd\best_*.pth -Algorithm SHA256
 Get-Content "E:\DMKPD_weights\weights.sha256"
 ```
 
 ### 9.2 用新权重重新导出提交
 
 ```powershell
-# 推理脚本会自动找 work_dirs/dmkpd_det/best_*.pth
 & '.\.venv\Scripts\python.exe' infer_e2e.py --export --out submission
-
-# 格式自检
 & '.\.venv\Scripts\python.exe' _sub_check.py
 ```
 
-### 9.3 复测 gap，看改善多少
+`_sub_check.py` 应报：`非凸且非退化（应修复） 0` / `退化（角点重合） 1`。
 
-**这是关键验证** —— 用 P1 的脚本量化新检测器的真实收益：
+### 9.3 复测端到端 AP（关键验证）
+
+**姿态换了权重 → 端到端 AP 要重新测**。用 `_ap_holdout.py`
+（与榜单同口径，COCO 101 点插值）：
 
 ```powershell
-# 清掉旧缓存，强制重新检测
-Remove-Item _gap_det_cache.json -ErrorAction SilentlyContinue
-
-& '.\.venv\Scripts\python.exe' _gap_check.py
-& '.\.venv\Scripts\python.exe' _gap_analyze.py
-& '.\.venv\Scripts\python.exe' _gap_vis.py
+& '.\.venv\Scripts\python.exe' _ap_holdout.py
 ```
 
-**对比基准**（1 epoch 检测器的结果）：
-```
-检测召回 91.4%  →  端到端 OKS 0.8507  （GT框条件 0.9153）
-损失分解: 漏检 73.8% + 框偏移 26.2%
-```
+**对比基准**（旧 5 轮姿态 + 24 轮检测器）：
 
-**期望**：召回提升到 95%+，端到端 OKS 提升到 0.88+。
+| 条件 | AP_50_95 | AP_50 | AP_75 |
+|---|---|---|---|
+| GT 框（上限） | 93.8671 | 95.6322 | 94.5798 |
+| 端到端 | 92.1086 | 94.2051 | 93.0274 |
+
+⚠️ **修复泄漏后这个基准需要重测**：之前的 holdout 被姿态"见过"，
+现在不会了。所以这一步应该**跑两次**：
+1. 先在**备忘录里记下新数字**（修复后基线）
+2. 再换新权重跑一次，看变化
 
 ### 9.4 记录到 git
 
 ```powershell
-# 留一份带时间戳的提交存档
-Copy-Item submission "submission_$(Get-Date -f yyyyMMdd_HHmm)"
+Copy-Item submission "submission_$ts"
 
-# 空 commit 记录"接受了哪份权重、多少分"
-git commit --allow-empty -m "chore: 接收 4060 训练的检测器（mAP_X.XXX@ep24），端到端 OKS 0.XXX"
+git commit --allow-empty -m "chore: 接收 4060 训练的 12 轮姿态（AP 0.XXXX），端到端 AP_50_95 XX.XX"
 git push
 ```
 
@@ -815,16 +872,21 @@ git push
 | `FileNotFoundError: .../rtmdet_tiny_...py` | junction 没建 | 重跑 §5.6 |
 | `KeyError: 'PackDetInputs is not in the mmpose::transform registry'` | 作用域被污染 | 检查脚本里的 `init_default_scope` |
 | `RuntimeError: Only one of type or by_epoch` | config 冲突 | 见 `PROJECT_STATUS.md` 坑清单 |
-| `CUDA out of memory` | batch size 太大 | 降 bs（4060 8GB 可试 bs=6） |
+| `CUDA out of memory` | batch size 太大 | 降 bs（姿态实测峰值仅 1.85GB，基本不会 OOM） |
 | 训练极慢（比 1650 还慢） | 没插电 / 降频 | 插电；看日志里的 `clock_sm` |
 | `UnicodeEncodeError: 'gbk' codec` | 控制台编码（打印 emoji/中文出错） | 加 `$env:PYTHONIOENCODING='utf-8'`，或重定向到文件 |
+| 训练从 ep6 开始而不是 ep1 | ❗**续训陷阱**：`work_dirs/dmkpd/*.pth` 有残留 | 加 `--no-resume`，或先把权重挪进 `_old_best/` |
+| `lr` 一直是 5e-4 不下降 | `milestones` 落在训练区间外 | 看 `_preflight_check.py` 第 6 节的调度器预览 |
+| `[新训] 未发现 checkpoint` | （正常）新机没有 `work_dirs` | 无视，正是想要的效果 |
 | `Could not resolve host: github` | 域名写错 | 检查地址里有没有 `.com` |
 | `Failed to connect ... over proxy 127.0.0.1` | 代理残留 | `Remove-Item Env:HTTPS_PROXY`（或开新终端） |
 | `error: remote origin already exists` | 已配过 | `git remote set-url origin <地址>` |
 
 ---
 
-## 附：完整命令速查（新机）
+## 附：完整命令速查
+
+### A. 新机首次部署（只做一次）
 
 ```powershell
 # ============ 1. 装 Python 3.10 + git ============
@@ -843,7 +905,12 @@ git config user.email "abc1021004366@163.com"
 Copy-Item "E:\DMKPD_transfer\*" "D:\DMKPD\" -Recurse -Force
 (Get-ChildItem DMKPD_dataset\train\images -Filter *.jpg).Count   # 9591
 
-# ============ 4. 建环境 ============
+# ============ 4. ❗重建 open-mmlab（不进 git，必须做）============
+git clone https://github.com/open-mmlab/mmpose.git open-mmlab\mmpose
+cd open-mmlab\mmpose; git checkout 759b39c1; cd ..\..
+git apply patches\0001-dmkpd-dataset.patch
+
+# ============ 5. 建环境 ============
 python -m venv .venv
 & '.\.venv\Scripts\python.exe' -m pip install --upgrade pip
 & '.\.venv\Scripts\python.exe' -m pip install torch==2.1.0+cu118 torchvision==0.16.0+cu118 torchaudio==2.1.0+cu118 --index-url https://download.pytorch.org/whl/cu118
@@ -852,15 +919,81 @@ python -m venv .venv
 & '.\.venv\Scripts\python.exe' -m pip install -e open-mmlab/mmpose --no-build-isolation   # ❗关键
 New-Item -ItemType Junction -Path mmdet -Target "$PWD\.venv\Lib\site-packages\mmdet"
 
-# ============ 5. 自检（必须全 OK）============
+# ============ 6. 环境自检（必须全 OK）============
 & '.\.venv\Scripts\python.exe' _env_check.py
+```
 
-# ============ 6. 训练 ============
-& '.\.venv\Scripts\python.exe' run_train_det.py --epochs 24 --val-interval 3 --no-resume > _det_train_out.txt 2>&1
+### B. ❗每次训练前（三条，30 秒）
 
-# ============ 7. 回传 ============
-Get-ChildItem work_dirs\dmkpd_det\best_*.pth
-Copy-Item work_dirs\dmkpd_det\best_*.pth "E:\DMKPD_weights\"
+```powershell
+cd D:\DMKPD
+
+# 1) 拿最新代码与划分
+git pull origin master
+
+# 2) 核对划分（应为 8711 / 480 / 400）
+Get-ChildItem DMKPD_dataset\splits\*.txt | ForEach-Object {
+    [pscustomobject]@{
+        文件   = $_.Name
+        行数   = (Get-Content $_ | Where-Object {$_ -and $_ -notmatch '^#'}).Count
+    }
+}
+
+# 3) 前置校验（❗最重要的一步）
+& '.\.venv\Scripts\python.exe' _preflight_check.py --epochs 12 --val-interval 1
+```
+
+期待最后一行：`✅ 检查通过 —— 可以开训。`
+
+### C. 启动姿态训练（12 epoch，约 7 小时）
+
+```powershell
+cd D:\DMKPD
+
+& '.\.venv\Scripts\python.exe' run_train.py `
+    --epochs 12 --val-interval 1 --no-resume `
+    > _pose_train_out.txt 2>&1
+```
+
+> 训检测器时换成 `run_train_det.py --epochs 24 --val-interval 3`。
+
+### D. 训练完：回传
+
+```powershell
+$best = Get-ChildItem work_dirs\dmkpd\best_*.pth |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+
+New-Item -ItemType Directory -Force "E:\DMKPD_weights" | Out-Null
+Copy-Item $best.FullName "E:\DMKPD_weights\"
+Get-FileHash $best.FullName -Algorithm SHA256 |
+    Select-Object Hash, Path | Tee-Object -Append E:\weights.sha256
+
+$d = Get-ChildItem work_dirs\dmkpd -Directory |
+     Sort-Object Name | Select-Object -Last 1
+Copy-Item "$($d.FullName)\$($d.Name).log" "E:\DMKPD_weights\train_log.txt"
+Copy-Item "$($d.FullName)\vis_data\*" "E:\DMKPD_weights\vis_data\" -Recurse -Force
+Copy-Item _pose_train_out.txt "E:\DMKPD_weights\train_stdout.txt"
+
+# 关键指标
+Get-Content _pose_train_out.txt | Select-String 'coco/AP:' | Select-Object -Last 3
+```
+
+### E. 本机：评测 + 提交
+
+```powershell
+cd D:\Personal\长安大学\人工智能创新大赛\DMKPD
+
+# 换权重（先把旧的挪走，避免歧义）
+Move-Item work_dirs\dmkpd\best_*.pth work_dirs\dmkpd\_old_best\ -Force
+Copy-Item "E:\DMKPD_weights\best_*.pth" work_dirs\dmkpd\ -Force
+Get-FileHash work_dirs\dmkpd\best_*.pth -Algorithm SHA256
+
+# 导出提交 + 自检
+& '.\.venv\Scripts\python.exe' infer_e2e.py --export --out submission
+& '.\.venv\Scripts\python.exe' _sub_check.py
+
+# 与榜单同口径的端到端 AP
+& '.\.venv\Scripts\python.exe' _ap_holdout.py
 ```
 
 ---
