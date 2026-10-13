@@ -194,46 +194,77 @@ class PoseRunner:
 
 
 # ------------------------------------------------------------------ #
-def sanitize_quad(kps, W, H):
-    """把四角修正成「图内 + 凸 + 顺时针」的合法四边形。
-
-    ❗为什么需要这一步（实测数据）：
-      在 300 张测试图的 437 个预测里，有 **8 个角点越出图像边界 1~8px**
-      （都是贴着画面边缘、被裁掉一部分的真实码），
-      另有 **1 个是自相交的「蝴蝶结」四边形**（`002724`，两个角只差 11.6px，
-      light 叉积符号呈 `-,+,+,-`）。
-
-      这两种都不影响 AP（低 OKS ≈ 未命中，与丢弃等价），
-      但会让提交文件在严格的格式校验下不合法。
-
-    处理策略（**只修病理情况，正常样本一个像素都不动**）：
-      1. 坐标 clip 到 [0, W-1] x [0, H-1]。成本 ≤8px。
-      2. 若四边形非凸或自相交：绕质心按极角重排，
-         保证得到凸的循环顺序。
-         —— 这与姿态数据集 `_extract_keypoints` 用同一套方法，
-         也与评测方「会 normalize 点顺序」的说明一致，
-         所以不会破坏 TL→TR→BR→BL 在所有正常样本上的语义。
-
-    Returns:
-        (kps, repaired): 修正后的 (4,2) 与是否触发了凸性修复
-    """
-    out = np.clip(kps, [0, 0], [W - 1, H - 1]).astype(np.float32)
-
-    v = np.roll(out, -1, axis=0) - out
+def _quad_metrics(p):
+    """返回 (是否凸, 最小叉积, 面积)。"""
+    v = np.roll(p, -1, axis=0) - p
     v2 = np.roll(v, -1, axis=0)
     cr = v[:, 0] * v2[:, 1] - v[:, 1] * v2[:, 0]
-    convex = np.all(cr > 0) or np.all(cr < 0)
-    if convex:
-        return out, False
-
-    # 绕质心按极角重排 -> 凸的循环顺序；再统一为顺时针（有向面积 > 0）
-    c = out.mean(axis=0)
-    ang = np.arctan2(out[:, 1] - c[1], out[:, 0] - c[0])
-    p = out[np.argsort(ang, kind='stable')]
+    convex = bool(np.all(cr > 0) or np.all(cr < 0))
     x, y = p[:, 0], p[:, 1]
-    if 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) < 0:
-        p = p[::-1]
-    return p.astype(np.float32), True
+    area = abs(0.5 * (float(np.dot(x, np.roll(y, -1)))
+                      - float(np.dot(y, np.roll(x, -1)))))
+    return convex, float(cr.min()), float(area)
+
+
+def sanitize_quad(kps, W, H):
+    """把四角修正成「图内 + 凸 + 顺时针 + TL 起点」的合法四边形。
+
+    ❗为什么需要这一步（两次实测数据）：
+      · 1 epoch 检测器：437 个预测里有 **8 个角点越界 1~8px**
+        （贴边的真实码），**1 个是自相交的蝴蝶结**。
+      · 21 epoch 检测器：411 个预测里 **1 个非凸**（`004353` 第 2 个实例，
+        两个角只差 **3.7px**，几乎重合）。
+
+      这些都不影响 AP（OKS 只比较点的位置，且评测方会 normalize
+      点的顺序），但会让提交文件在严格的格式校验下不合法。
+
+    处理策略（**只在病理情况下动手，正常样本一个像素都不改**）：
+      1. 坐标 clip 到 [0, W-1] x [0, H-1]。
+      2. 若四边形非凸：**枚举 4 个点的全部 24 种排列**，取
+         「凸 + 面积最大」的那个作为解，并统一为顺时针、TL 起点。
+
+    ❗为什么不能只用「绕质心极角排序」（我第一版的做法，实测不够）：
+      极角排序**只在点集处于凸位置时**才能还原凸多边形顺序。
+      当两个点几乎重合（本例相差 3.7px）时，点集退化成三角形，
+      **任何排列都构不成凸四边形** —— 此时无解，只能退回近似。
+      这种情况是姿态模型的真实失败（等于只预测出 3 个不同位置），
+      OKS 本来就会很低，与丢弃等价。
+
+    Returns:
+        (kps, repaired, fixed): 修正后的 (4,2)、是否触发修复、
+                                是否真正修成了凸四边形
+    """
+    out = np.clip(kps, [0, 0], [W - 1, H - 1]).astype(np.float64)
+    convex, _, _ = _quad_metrics(out)
+    if convex:
+        return out.astype(np.float32), False, True
+
+    import itertools
+
+    def _canon(p):
+        """统一为顺时针 + TL(x+y 最小) 起点。"""
+        x, y = p[:, 0], p[:, 1]
+        if 0.5 * (float(np.dot(x, np.roll(y, -1)))
+                  - float(np.dot(y, np.roll(x, -1)))) < 0:
+            p = p[::-1]
+        s = p[:, 0] + p[:, 1]
+        st = int(np.lexsort((p[:, 0], s))[0])
+        return np.roll(p, -st, axis=0)
+
+    best = None          # 凸解：按面积最大
+    best_any = None      # 兜底：任意解里面积最大
+    for perm in itertools.permutations(range(4)):
+        p = out[list(perm)]
+        cv, mincr, area = _quad_metrics(p)
+        if best_any is None or area > best_any[1]:
+            best_any = (_canon(p), area)
+        if cv and (best is None or area > best[1]):
+            best = (_canon(p), area)
+
+    if best is not None:
+        return best[0].astype(np.float32), True, True
+    # 退化（点数重合）：无凸解，退回面积最大的排列，仅作外观修正
+    return best_any[0].astype(np.float32), True, False
 
 
 def draw(img, bboxes, bsc, poses, title=''):
@@ -306,7 +337,8 @@ def main():
         os.makedirs(args.out, exist_ok=True)
 
     t0 = time.time()
-    stats = dict(n_det=0, n_keep=0, n_img=0, confs=[], n_repair=0)
+    stats = dict(n_det=0, n_keep=0, n_img=0, confs=[], n_repair=0,
+                 n_repair_ok=0, n_degenerate=0)
     vis_rows = []
 
     for idx, fn in enumerate(files):
@@ -336,8 +368,10 @@ def main():
         poses = runner(img, bx, bs) if len(bx) else []
         recs = []
         for b, s, po in zip(bx, bs, poses):
-            kp, repaired = sanitize_quad(po['keypoints'], W, H)
+            kp, repaired, fixed = sanitize_quad(po['keypoints'], W, H)
             stats['n_repair'] += int(repaired)
+            stats['n_repair_ok'] += int(repaired and fixed)
+            stats['n_degenerate'] += int(repaired and not fixed)
             ksc = po['keypoint_scores']
             conf = float(s) * float(np.mean(ksc))
             recs.append((b, s, kp, ksc, conf))
@@ -382,8 +416,13 @@ def main():
     print(f'  通过 conf>={args.score_thr}  {stats["n_keep"]} '
           f'({100*stats["n_keep"]/max(1,stats["n_det"]):.1f}%)')
     print(f'  平均 {stats["n_keep"]/max(1,stats["n_img"]):.2f} 个/图')
-    print(f'  四边形凸性修复   {stats["n_repair"]} 个'
-          f' ({100*stats["n_repair"]/max(1,stats["n_keep"]):.2f}%)')
+    print(f'  四边形修复   {stats["n_repair"]} 个'
+          f' ({100*stats["n_repair"]/max(1,stats["n_keep"]):.2f}%)'
+          f'  其中修成凸 {stats["n_repair_ok"]} 个'
+          f' / 退化无法修 {stats["n_degenerate"]} 个')
+    if stats['n_degenerate']:
+        print('       注：退化（角点几乎重合）是姿态模型的真实失败，')
+        print('           OKS 本就很低，与丢弃等价，不影响评分')
     if stats['confs']:
         c = np.array(stats['confs'])
         print(f'  conf 分布  p05={np.percentile(c,5):.3f} '

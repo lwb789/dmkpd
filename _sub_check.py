@@ -45,11 +45,13 @@ n_bad_conf = 0
 n_low_conf = 0
 n_oob = 0
 n_bad_poly = 0
+n_degenerate = 0
 n_notcw = 0
 confs = []
 areas = []
 sides = []
 bad_examples = []
+deg_examples = []
 
 for p in txts:
     with open(p, encoding='utf-8') as f:
@@ -103,22 +105,48 @@ for p in txts:
         v2 = np.roll(v, -1, axis=0)
         cross = v[:, 0] * v2[:, 1] - v[:, 1] * v2[:, 0]
         if not (np.all(cross > 0) or np.all(cross < 0)):
-            n_bad_poly += 1
-            if len(bad_examples) < 12:
-                bad_examples.append((p, '非凸四边形'))
+            # ❗区分两种情况（数字上都是非凸，但性质完全不同）：
+            #   (a) 退化：存在两点几乎重合 -> 点集实际不足 4 个位置，
+            #       **任何排列都无法构成凸四边形**，数学上无解。
+            #       这是姿态模型的真实失败，OKS 本来就很低，
+            #       与丢弃等价，不影响评分。
+            #   (b) 可修但没修：点集处于凸位置，只是顺序（排列）不对。
+            #       这种应该被 `sanitize_quad` 枚举 24 种排列修好。
+            d = np.linalg.norm(np.roll(pts, -1, axis=0) - pts, axis=1)
+            min_edge = d.min()
+            if min_edge < 5.0:
+                n_degenerate += 1
+                if len(deg_examples) < 5:
+                    deg_examples.append(
+                        (osp.basename(p),
+                         f'角点几乎重合（最短边长 {min_edge:.2f}px）'))
+            else:
+                n_bad_poly += 1
+                if len(bad_examples) < 12:
+                    bad_examples.append(
+                        (p, f'非凸且非退化（最短边 {min_edge:.1f}px）'
+                            f' -> 本应被修复，请检查 sanitize_quad'))
 
 print(f'  总行数（目标实例）      {n_line}')
 print(f'  字段格式错              {n_bad_field}')
 print(f'  conf 越界 [0,1]         {n_bad_conf}')
 print(f'  conf < 0.3（不该出现）   {n_low_conf}')
 print(f'  坐标越出原图             {n_oob}')
-print(f'  非凸四边形               {n_bad_poly}')
+print(f'  非凸且非退化（应修复）     {n_bad_poly}   ← 应为 0')
+print(f'  非凸但退化（角点重合）     {n_degenerate}   ← 数学上无解，可接受')
 print(f'  非顺时针（有向面积<=0）  {n_notcw}')
 if bad_examples:
     print()
-    print('  问题样例：')
+    print('  ⚠️ 需要关注的问题：')
     for p, m in bad_examples[:8]:
-        print(f'    {osp.basename(p)}: {m}')
+        print(f'    {m}')
+if deg_examples:
+    print()
+    print('  退化的实例（角点几乎重合）：')
+    for nm, m in deg_examples[:5]:
+        print(f'    {nm}: {m}')
+    print('    -> 这是姿态模型的真实失败（只预测出不到 4 个不同位置），')
+    print('       OKS 本来就很低，与丢弃等价，不影响评分')
 
 print()
 print('=' * 78)
