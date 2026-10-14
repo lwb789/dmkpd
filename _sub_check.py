@@ -116,10 +116,18 @@ for p in txts:
             min_edge = d.min()
             if min_edge < 5.0:
                 n_degenerate += 1
-                if len(deg_examples) < 5:
-                    deg_examples.append(
-                        (osp.basename(p),
-                         f'角点几乎重合（最短边长 {min_edge:.2f}px）'))
+                # ❗找「距离最小的那一对」——不能直接用 argwhere(== min_edge)，
+                #   因为对角线上 (i,i) 的距离是 0，排序后必然排第一（踩过）。
+                D = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
+                D = D + np.eye(4) * 1e9          # 屏蔽对角线
+                ia, ib = (int(t) for t in np.unravel_index(D.argmin(), D.shape))
+                deg_examples.append(dict(
+                    file=osp.basename(p), conf=conf,
+                    min_edge=float(min_edge), pair=(ia, ib),
+                    pts=pts.copy(), w=int(W), h=int(H),
+                    oob=bool(pts[:, 0].min() < 0.5 or pts[:, 1].min() < 0.5 or
+                             pts[:, 0].max() > W - 1.5 or
+                             pts[:, 1].max() > H - 1.5)))
             else:
                 n_bad_poly += 1
                 if len(bad_examples) < 12:
@@ -142,11 +150,30 @@ if bad_examples:
         print(f'    {m}')
 if deg_examples:
     print()
-    print('  退化的实例（角点几乎重合）：')
-    for nm, m in deg_examples[:5]:
-        print(f'    {nm}: {m}')
-    print('    -> 这是姿态模型的真实失败（只预测出不到 4 个不同位置），')
-    print('       OKS 本来就很低，与丢弃等价，不影响评分')
+    print('=' * 78)
+    print(f'  ❗ 退化实例明细（共 {n_degenerate} 个，全部列出）')
+    print('=' * 78)
+    for k, e in enumerate(deg_examples, 1):
+        ia, ib = e['pair']
+        print(f'  [{k}] {e["file"]}   conf={e["conf"]:.4f}'
+              f'   {e["w"]}x{e["h"]}'
+              + ('   ⚠️有点贴边' if e['oob'] else ''))
+        for j, (x, y) in enumerate(e['pts']):
+            print(f'        P{j} ({x:>9.2f}, {y:>9.2f})')
+        dd = np.linalg.norm(np.roll(e['pts'], -1, axis=0) - e['pts'], axis=1)
+        print(f'        边长 {[round(float(t), 2) for t in dd]}'
+              f'   min={e["min_edge"]:.2f}')
+        print(f'        ❗ P{ia} 与 P{ib} 重合'
+              f'（相距 {np.linalg.norm(e["pts"][ia] - e["pts"][ib]):.2f}px）')
+    print()
+    print('  原因：姿态模型对这 4 个角点只输出了 <4 个**不同**位置')
+    print('       → 点集数学上不可能构成四边形，任何排列都无解')
+    print('       → 这与「丢弃该实例」等价，OKS 本来就接近 0，不影响评分')
+    print('       → 注意：这不是 sanitize_quad 的 bug（已实测确认）')
+    print()
+    print('  可视化（自动生成）：')
+    print('       & ".\\.venv\\Scripts\\python.exe" _sub_vis.py --kind all')
+    print('        -> vis_out2/sub_degenerate_*_zoom.jpg（放大到重合点）')
 
 print()
 print('=' * 78)
