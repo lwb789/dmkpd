@@ -47,6 +47,7 @@ import os
 import os.path as osp
 import time
 from collections import defaultdict
+from itertools import permutations
 
 import cv2
 import numpy as np
@@ -68,20 +69,35 @@ CACHE = '_gap_det_cache.json'
 
 # ================================================================== #
 # OKS（与 xtcocotools 的 computeOks 等价，K=4，sigma=0.1）
+#
+# ❗❗ 必须做「点序归一化」（2026-10-14 修正）
+#   比赛说明：「推荐顺序 TL→TR→BR→BL，但评测脚本会 normalize 点顺序」
+#   => 评测方按**点集**比对，点的身份不影响得分。
+#   本函数原来逐点直接求距离，会把「四个角位置全对、只是起点不同」
+#   的实例误判成漏检（实测 AP_50 因此低估约 3.5 点）。
+#   详见 `_order_test.py` 的判决实验。
 # ================================================================== #
+ALIGN_PERMS = [list(p) for p in permutations(range(4))]
+
+
 def oks(pred_kps, gt_kps, area):
-    """单实例 OKS。
+    """单实例 OKS（**已做点序归一化**，与评测方口径一致）。
 
     pred_kps, gt_kps: (4, 2) 原图像素坐标
     area: GT 实例面积（像素²）
 
-    公式：OKS = mean_k( exp(-d_k^2 / (2 * sigma^2 * area)) )
+    公式：OKS = max_π mean_k( exp(-d_k(π)^2 / (2*sigma^2*area)) )
     注意 xtcocotools 里 vars = (sigma*2)^2 = 4*sigma^2，
     再除以 2 -> 等价于 2*sigma^2，与下面写法一致。
     """
-    d2 = np.sum((np.asarray(pred_kps, np.float64)
-                 - np.asarray(gt_kps, np.float64)) ** 2, axis=1)
-    return float(np.mean(np.exp(-d2 / (2.0 * SIGMA ** 2 * area))))
+    pred = np.asarray(pred_kps, np.float64)
+    gt = np.asarray(gt_kps, np.float64)
+    best = 0.0
+    for pm in ALIGN_PERMS:
+        d2 = np.sum((pred[np.asarray(pm)] - gt) ** 2, axis=1)
+        best = max(best, float(np.mean(
+            np.exp(-d2 / (2.0 * SIGMA ** 2 * area)))))
+    return best
 
 
 def box_iou(a, b):
@@ -162,6 +178,13 @@ def main():
         import glob
         c = sorted(glob.glob('work_dirs/dmkpd_det/best_coco_bbox_mAP*.pth'))
         args.det_ckpt = c[-1] if c else None
+
+    if args.pose_ckpt is None:
+        # 按 mtime 取最新（旧权重会进 _old_best/，不在 glob 内）
+        c = glob.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+        args.pose_ckpt = max(c, key=osp.getmtime) if c else None
+    if not args.pose_ckpt or not osp.isfile(args.pose_ckpt):
+        raise SystemExit(f'找不到姿态权重：{args.pose_ckpt}')
 
     print('=' * 78)
     print('P1：检测框 vs GT 框 对姿态精度的影响')

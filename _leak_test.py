@@ -25,23 +25,58 @@
 用法：
     python _leak_test.py
 """
-import json
-import os
 import os.path as osp
 from collections import defaultdict
+from itertools import permutations
 
-import cv2
 import numpy as np
-import torch
-from mmengine.config import Config
-from mmengine.dataset import Compose, pseudo_collate
-from mmengine.registry import init_default_scope
-from mmengine.runner import load_checkpoint
-
-import mmpose  # noqa
-from mmpose.registry import MODELS as POSE_MODELS
 
 SIGMA = 0.1
+
+
+# ================================================================== #
+# OKS 辅助（**点序归一化**，与评测方口径一致）
+#
+# ❗比赛说明：「推荐顺序 TL→TR→BR→BL，但评测脚本会 normalize 点顺序」
+#   => 必须对 4 个点取最优排列，否则会把「位置全对、只有起点不同」
+#      的实例误判成定位失败（详见 `_order_test.py`）。
+# ================================================================== #
+ALIGN_PERMS = [list(p) for p in permutations(range(4))]
+
+
+def oks_aligned(pred, gt, area):
+    """pred/gt: (4,2); area: float -> 最优排列下的 OKS。"""
+    pred = np.asarray(pred, np.float64)
+    gt = np.asarray(gt, np.float64)
+    best = 0.0
+    for pm in ALIGN_PERMS:
+        d2 = ((pred[np.asarray(pm)] - gt) ** 2).sum(1)
+        best = max(best, float(np.mean(np.exp(
+            -d2 / (2 * SIGMA ** 2 * area)))))
+    return best
+
+
+def epe_aligned(pred, gt):
+    """最优排列下的逐点距离（均值与最大值）。"""
+    pred = np.asarray(pred, np.float64)
+    gt = np.asarray(gt, np.float64)
+    best = None
+    for pm in ALIGN_PERMS:
+        d = np.linalg.norm(pred[np.asarray(pm)] - gt, axis=1)
+        if best is None or d.mean() < best.mean():
+            best = d
+    return best.mean(), best.max()
+
+
+import cv2  # noqa: E402
+import torch  # noqa: E402
+from mmengine.config import Config  # noqa: E402
+from mmengine.dataset import Compose, pseudo_collate  # noqa: E402
+from mmengine.registry import init_default_scope  # noqa: E402
+from mmengine.runner import load_checkpoint  # noqa: E402
+
+import mmpose  # noqa: E402
+from mmpose.registry import MODELS as POSE_MODELS  # noqa: E402
 
 
 class PoseOnGT:
@@ -108,13 +143,10 @@ def run(cfg, by, runner, tag):
         ar = np.array([float(g['area']) for g in gts])
         pred = runner(img, bx)
         for i in range(len(gts)):
-            d2 = ((pred[i] - gk[i]) ** 2).sum(1)
-            oks_all.append(float(np.mean(np.exp(
-                -d2 / (2 * SIGMA ** 2 * ar[i])))))
-            epe_all.append(float(np.linalg.norm(pred[i] - gk[i], axis=1)
-                                 .mean()))
-            rel_all.append(float(np.linalg.norm(pred[i] - gk[i], axis=1)
-                                 .mean() / np.sqrt(ar[i])))
+            oks_all.append(oks_aligned(pred[i], gk[i], ar[i]))
+            em, _ = epe_aligned(pred[i], gk[i])
+            epe_all.append(em)
+            rel_all.append(em / np.sqrt(ar[i]))
             sizes.append(float(np.sqrt(ar[i])))
     return dict(tag=tag, n_img=len(by), n=len(oks_all),
                 oks=np.array(oks_all), epe=np.array(epe_all),
