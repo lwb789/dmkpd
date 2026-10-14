@@ -40,6 +40,7 @@ import os
 import os.path as osp
 import time
 from collections import defaultdict
+from itertools import permutations
 
 import cv2
 import numpy as np
@@ -59,23 +60,60 @@ SIGMA = 0.1
 CACHE = '_ap_holdout_det_cache.json'
 THRS = np.arange(0.5, 1.0, 0.05)          # COCO 的 10 个 OKS 阈值
 
+# ================================================================== #
+# ❗❗ 点序归一化（2026-10-14 发现并修正）
+# ================================================================== #
+# 比赛说明原文：「推荐顺序 TL→TR→BR→BL，**但评测脚本会 normalize 点顺序**」
+# => 评测方按**点集**比对，点的身份（哪个是 top_left）不影响得分。
+#
+# 我原来的 `oks_matrix` 是**逐点直接求距离**，没有做任何点序对齐 ——
+# 结果把大量「4 个角点位置全对、只是起点/绕向不同」的实例
+# 误判成了漏检（OKS≈0）。
+#
+# 实测（`_order_test.py`，holdout1702 400 张现场图）：
+#     对齐方式            AP_50_95  AP_50    AP_75    AR
+#     ① 逐点（旧实现）      92.52    94.43    93.27   93.95
+#     ② 4 种循环移位        95.76    97.89    96.73   96.60
+#     ④ 24 种全排列         95.76    97.89    96.73   96.62
+#     榜单                 97.67    97.80    97.80   98.35
+# -> **AP_50 与榜单几乎完全吻合（97.89 vs 97.80）**，证明评测方
+#    确实是按点集比对。所以本地必须做同样的归一化。
+#
+# 用「4 种循环移位」还是「24 种全排列」？
+#   · 两者结果几乎相同（AR 差 0.02），因为「位置都对但排列非循环」
+#     的情形极少，且本来就拿不到好 OKS。
+#   · 取 **24 种全排列**：语义上严格等于「点集比对」，
+#     且对 `sanitize_quad` 造成的任何重排都免疫。
+ALIGN_PERMS = [list(p) for p in permutations(range(4))]
+
 
 # ================================================================== #
 # OKS / AP（与 xtcocotools 等价）
 # ================================================================== #
 def oks_matrix(pred_kps, pred_conf, gt_kps, gt_area):
-    """返回 (P, G) 的 OKS 矩阵。
+    """返回 (P, G) 的 OKS 矩阵，**已做点序归一化**。
 
     pred_kps: (P, 4, 2)   gt_kps: (G, 4, 2)   gt_area: (G,)
     OKS = mean_k exp(-d^2 / (2*sigma^2*area_gt))
+
+    ❗对 4 个点取**最优排列**，等价于「按点集比对」。
+      比赛说明明确了评测会 normalize 点顺序，这里必须一致，
+      否则会把「位置全对、只有起点不同」误判成漏检。
+      详见文件头 ALIGN_PERMS 处的实测数据。
     """
     P, G = len(pred_kps), len(gt_kps)
     if P == 0 or G == 0:
         return np.zeros((P, G))
-    d2 = ((np.asarray(pred_kps)[:, None, :, :]           # (P,1,K,2)
-           - np.asarray(gt_kps)[None, :, :, :]) ** 2).sum(-1)  # (P,G,K)
-    denom = 2.0 * SIGMA ** 2 * np.asarray(gt_area)[None, :, None]
-    return np.exp(-d2 / denom).mean(-1)                  # (P,G)
+    pred = np.asarray(pred_kps)
+    gt = np.asarray(gt_kps)
+    area = np.asarray(gt_area)
+    best = np.zeros((P, G))
+    for pm in ALIGN_PERMS:
+        d2 = ((pred[:, None, np.asarray(pm), :]
+               - gt[None, :, :, :]) ** 2).sum(-1)      # (P, G, K)
+        oks = np.exp(-d2 / (2.0 * SIGMA ** 2 * area[None, :, None])).mean(-1)
+        best = np.maximum(best, oks)
+    return best
 
 
 def ap_from_oks(oks, conf, thr):
