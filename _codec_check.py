@@ -27,6 +27,8 @@ mmpose 的 decode 有两条精修路径：
     python _codec_check.py --split splits/holdout1702.txt --limit 120
 """
 import argparse
+import glob
+import os.path as osp
 import time
 from collections import defaultdict
 
@@ -71,11 +73,18 @@ def swap_decoder(model, **kw):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pose-config', default='config.py')
-    ap.add_argument('--pose-ckpt',
-                    default='work_dirs/dmkpd/best_coco_AP_epoch_5.pth')
+    ap.add_argument('--pose-ckpt', default=None,
+                    help='默认自动找 work_dirs/dmkpd/best_coco_AP*.pth 中'
+                         'mtime 最新的')
     ap.add_argument('--split', default='splits/holdout1702.txt')
     ap.add_argument('--limit', type=int, default=120)
     args = ap.parse_args()
+
+    if args.pose_ckpt is None:
+        c = glob.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+        args.pose_ckpt = max(c, key=osp.getmtime) if c else None
+    if not args.pose_ckpt or not osp.isfile(args.pose_ckpt):
+        raise SystemExit(f'找不到姿态权重：{args.pose_ckpt}')
 
     cfg = Config.fromfile(args.pose_config)
 

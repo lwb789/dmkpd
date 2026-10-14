@@ -215,8 +215,9 @@ def main():
     ap.add_argument('--det-config', default='config_det.py')
     ap.add_argument('--det-ckpt', default=None)
     ap.add_argument('--pose-config', default='config.py')
-    ap.add_argument('--pose-ckpt',
-                    default='work_dirs/dmkpd/best_coco_AP_epoch_5.pth')
+    ap.add_argument('--pose-ckpt', default=None,
+                    help='默认自动找 work_dirs/dmkpd/best_coco_AP*.pth 中'
+                         '**mtime 最新**的')
     ap.add_argument('--split', default='splits/holdout1702.txt',
                     help='DMKPD_dataset 下的划分文件')
     ap.add_argument('--score-thr', type=float, default=0.30)
@@ -227,6 +228,13 @@ def main():
     if args.det_ckpt is None:
         c = sorted(glob.glob('work_dirs/dmkpd_det/best_coco_bbox_mAP*.pth'))
         args.det_ckpt = c[-1] if c else None
+
+    if args.pose_ckpt is None:
+        # 按 mtime 取最新（旧权重会进 _old_best/，不在 glob 内）
+        c = glob.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+        args.pose_ckpt = max(c, key=osp.getmtime) if c else None
+    if not args.pose_ckpt or not osp.isfile(args.pose_ckpt):
+        raise SystemExit(f'找不到姿态权重：{args.pose_ckpt}')
 
     print('=' * 80)
     print('holdout1702 基准 AP（与榜单口径一致）')

@@ -59,14 +59,24 @@ def swap_decoder(model, unbiased, blur_kernel_size=11):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--pose-config', default='config.py')
-    ap.add_argument('--pose-ckpt',
-                    default='work_dirs/dmkpd/best_coco_AP_epoch_5.pth')
+    ap.add_argument('--pose-ckpt', default=None,
+                    help='默认自动找 work_dirs/dmkpd/best_coco_AP*.pth 中'
+                         'mtime 最新的')
     ap.add_argument('--det-config', default='config_det.py')
     ap.add_argument('--det-ckpt', default=None)
     ap.add_argument('--split', default='splits/holdout1702.txt')
     ap.add_argument('--score-thr', type=float, default=0.30)
     ap.add_argument('--limit', type=int, default=200)
     args = ap.parse_args()
+
+    if args.det_ckpt is None:
+        c = sorted(glob.glob('work_dirs/dmkpd_det/best_coco_bbox_mAP*.pth'))
+        args.det_ckpt = c[-1]
+    if args.pose_ckpt is None:
+        c = glob.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+        args.pose_ckpt = max(c, key=osp.getmtime) if c else None
+    if not args.pose_ckpt or not osp.isfile(args.pose_ckpt):
+        raise SystemExit(f'找不到姿态权重：{args.pose_ckpt}')
 
     if args.det_ckpt is None:
         c = sorted(glob.glob('work_dirs/dmkpd_det/best_coco_bbox_mAP*.pth'))

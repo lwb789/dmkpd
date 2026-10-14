@@ -147,8 +147,9 @@ def main():
     ap.add_argument('--det-config', default='config_det.py')
     ap.add_argument('--det-ckpt', default=None)
     ap.add_argument('--pose-config', default='config.py')
-    ap.add_argument('--pose-ckpt',
-                    default='work_dirs/dmkpd/best_coco_AP_epoch_5.pth')
+    ap.add_argument('--pose-ckpt', default=None,
+                    help='默认自动找 work_dirs/dmkpd/best_coco_AP*.pth 中'
+                         'mtime 最新的')
     ap.add_argument('--score-thr', type=float, default=0.30)
     ap.add_argument('--match-iou', type=float, default=0.5,
                     help='检测框与 GT 框匹配的 IoU 阈值')

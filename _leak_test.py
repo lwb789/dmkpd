@@ -144,8 +144,14 @@ def main():
 
     init_default_scope('mmpose')
     pose = POSE_MODELS.build(cfg.model).cuda().eval()
-    load_checkpoint(pose, 'work_dirs/dmkpd/best_coco_AP_epoch_5.pth',
-                    map_location='cpu', strict=False)
+    # 自动找最新的 best（旧权重会进 _old_best/，不在 glob 内）
+    import glob as _g
+    cks = _g.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+    ck = max(cks, key=osp.getmtime) if cks else None
+    if ck is None:
+        raise SystemExit('找不到姿态权重 work_dirs/dmkpd/best_coco_AP*.pth')
+    print(f'姿态权重  {ck}')
+    load_checkpoint(pose, ck, map_location='cpu', strict=False)
     pose.cfg = cfg
     runner = PoseOnGT(pose, cfg)
 

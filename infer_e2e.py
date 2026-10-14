@@ -38,7 +38,7 @@ conf 怎么取（与 COCO AP 口径一致的乘法分解）
 用法
 ===================================================================
     # 先看几个样本的对不对（画图）
-    python infer_e2e.py --pose-ckpt work_dirs/dmkpd/best_coco_AP_epoch_5.pth \
+    python infer_e2e.py --pose-ckpt work_dirs/dmkpd/best_coco_AP_epoch_12.pth \
                         --det-ckpt  work_dirs/dmkpd_det/best_coco_bbox_mAP_epoch_60.pth \
                         --vis 12
 
@@ -300,8 +300,10 @@ def main():
     ap.add_argument('--det-config', default='config_det.py')
     ap.add_argument('--det-ckpt', default=None)
     ap.add_argument('--pose-config', default='config.py')
-    ap.add_argument('--pose-ckpt',
-                    default='work_dirs/dmkpd/best_coco_AP_epoch_5.pth')
+    ap.add_argument('--pose-ckpt', default=None,
+                    help='默认自动找 work_dirs/dmkpd/best_coco_AP*.pth中'
+                         '**mtime 最新**的那个；旧权重会被挪进 _old_best/，'
+                         '所以这里按 mtime 取而不是按名字排序的最后一个')
     ap.add_argument('--img-dir', default='DMKPD_dataset/test')
     ap.add_argument('--score-thr', type=float, default=0.30)
     ap.add_argument('--no-nms-thr', type=float, default=0.65)
@@ -313,15 +315,31 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     args = ap.parse_args()
 
+    import glob
+    import os.path as _osp
+
     if args.det_ckpt is None:
         # 自动找 best
-        import glob
         c = sorted(glob.glob('work_dirs/dmkpd_det/best_coco_bbox_mAP*.pth'))
         if not c:
             c = sorted(glob.glob('work_dirs/dmkpd_det/epoch_*.pth'))
         args.det_ckpt = c[-1] if c else None
-    print('det ckpt :', args.det_ckpt)
+
+    if args.pose_ckpt is None:
+        # ⚠️ 按 **mtime** 取最新，而不是按文件名排序。
+        #   因为旧权重会被挪进 `_old_best/`（不在 glob 范围内），
+        #   但若将来有多个 best 并存（如 ep5 与 ep12），
+        #   靠名字排序会选错（`epoch_12` < `epoch_5` 的字典序陷阱）。
+        c = glob.glob('work_dirs/dmkpd/best_coco_AP*.pth')
+        if not c:
+            c = glob.glob('work_dirs/dmkpd/epoch_*.pth')
+        args.pose_ckpt = (max(c, key=_osp.getmtime) if c else None)
+
+    print('det  ckpt:', args.det_ckpt)
     print('pose ckpt:', args.pose_ckpt)
+    if args.pose_ckpt is None or not _osp.isfile(args.pose_ckpt):
+        raise SystemExit(f'❌ 找不到姿态权重：{args.pose_ckpt}\n'
+                         '   检查 work_dirs/dmkpd/ 下有没有 best_coco_AP*.pth')
 
     det, det_cfg = build_detector(args.det_config, args.det_ckpt)
     pose, pose_cfg = build_pose(args.pose_config, args.pose_ckpt)
