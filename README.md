@@ -1,6 +1,6 @@
-# DMKPD — Data Matrix 码 4 角关键点检测
+# DMKPD — Data Matrix 码关键点检测
 
-从现场图片中定位 Data Matrix（DM）码，并回归出码的 4 个角点像素坐标。
+2026 VLP 挑战赛参赛作品
 
 ---
 
@@ -77,4 +77,12 @@
 ## 六、引用
 
 RTMDet · HRNet · OpenMMLab（mmdetection / mmpose / mmcv / mmengine）
+
+------
+
+## 七、其它链接
+
+参赛及数据下载：http://vlp.chd.edu.cn/tasks/5
+
+模型权重下载：https://pan.baidu.com/s/1m_yNYYP4m4DuLJWdJo_FwQ?pwd=rtix 提取码: rtix 
 
